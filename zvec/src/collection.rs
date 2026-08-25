@@ -1,4 +1,5 @@
 use std::ffi::CStr;
+use std::marker::PhantomData;
 use std::ptr;
 
 use crate::doc::Doc;
@@ -408,6 +409,92 @@ impl Collection {
     }
 
     // =========================================================================
+    // Document Iteration
+    // =========================================================================
+
+    /// Creates an iterator over all documents in the collection using default
+    /// options (all scalar fields, vectors included).
+    ///
+    /// The iterator traverses an isolated snapshot taken at creation time;
+    /// documents written afterwards are not visible.
+    pub fn iter(&self) -> Result<DocIterator<'_>> {
+        self.iter_with_options(None, true)
+    }
+
+    /// Creates an iterator over all documents with control over which fields
+    /// to return.
+    ///
+    /// - `output_fields`: scalar fields to return; `None` returns all fields.
+    ///   An empty slice returns no scalar fields (primary key only).
+    /// - `include_vector`: whether to include vector fields.
+    ///
+    /// The iterator traverses an isolated snapshot taken at creation time;
+    /// documents written afterwards are not visible. While the iterator is
+    /// open, schema changes (create/drop index, add/alter/drop column) and
+    /// destroy are rejected by the C library.
+    pub fn iter_with_options(
+        &self,
+        output_fields: Option<&[&str]>,
+        include_vector: bool,
+    ) -> Result<DocIterator<'_>> {
+        let options = unsafe { zvec_rust_sys::zvec_iterator_options_create() };
+        if options.is_null() {
+            return Err(Error {
+                code: ErrorCode::InternalError,
+                message: "failed to create iterator options".into(),
+            });
+        }
+
+        // Build C string fields before the first FFI call that must be cleaned
+        // up on failure; `options` is destroyed on every early return.
+        let result = (|| -> Result<()> {
+            let c_fields = output_fields
+                .map(|fields| {
+                    fields
+                        .iter()
+                        .map(|f| to_cstring(f))
+                        .collect::<Result<Vec<_>>>()
+                })
+                .transpose()?;
+            let c_field_ptrs: Option<Vec<_>> = c_fields
+                .as_ref()
+                .map(|f| f.iter().map(|s| s.as_ptr()).collect());
+            let (fields_ptr, fields_count) = match &c_field_ptrs {
+                Some(ptrs) => (ptrs.as_ptr(), ptrs.len()),
+                None => (ptr::null(), 0),
+            };
+
+            check_error(unsafe {
+                zvec_rust_sys::zvec_iterator_options_set_output_fields(
+                    options,
+                    fields_ptr,
+                    fields_count,
+                )
+            })?;
+            check_error(unsafe {
+                zvec_rust_sys::zvec_iterator_options_set_include_vector(options, include_vector)
+            })?;
+            Ok(())
+        })();
+        if let Err(e) = result {
+            unsafe { zvec_rust_sys::zvec_iterator_options_destroy(options) };
+            return Err(e);
+        }
+
+        let mut iter: *mut zvec_rust_sys::zvec_doc_iterator_t = ptr::null_mut();
+        let rc = check_error(unsafe {
+            zvec_rust_sys::zvec_collection_create_iterator(self.handle, options, &mut iter)
+        });
+        unsafe { zvec_rust_sys::zvec_iterator_options_destroy(options) };
+        rc?;
+
+        Ok(DocIterator {
+            handle: iter,
+            _collection: PhantomData,
+        })
+    }
+
+    // =========================================================================
     // Index Management
     // =========================================================================
 
@@ -484,6 +571,49 @@ impl Drop for Collection {
 // See: https://github.com/alibaba/zvec — C-API thread-safety guarantees.
 unsafe impl Send for Collection {}
 unsafe impl Sync for Collection {}
+
+/// Iterator over all documents in a collection.
+///
+/// Created by [`Collection::iter`] or [`Collection::iter_with_options`].
+/// Traverses an isolated snapshot taken at creation time. Each `next` call
+/// returns `Some(Ok(doc))` for a document, `Some(Err(e))` on failure, and
+/// `None` at the end of the collection.
+///
+/// The iterator borrows its collection, so the collection cannot be dropped
+/// while the iterator is alive. Dropping the iterator closes it via
+/// `zvec_doc_iterator_close`.
+pub struct DocIterator<'a> {
+    handle: *mut zvec_rust_sys::zvec_doc_iterator_t,
+    _collection: PhantomData<&'a Collection>,
+}
+
+impl<'a> Iterator for DocIterator<'a> {
+    type Item = Result<Doc>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut doc: *mut zvec_rust_sys::zvec_doc_t = ptr::null_mut();
+        let rc = unsafe { zvec_rust_sys::zvec_doc_iterator_next(self.handle, &mut doc) };
+        if rc != zvec_rust_sys::ZVEC_OK {
+            return Some(Err(Error {
+                code: ErrorCode::from(rc),
+                message: format!("document iterator failed with error code {}", rc),
+            }));
+        }
+        if doc.is_null() {
+            return None; // EOF
+        }
+        // Take ownership: Rust will call zvec_doc_destroy on drop.
+        Some(Ok(unsafe { Doc::from_raw(doc) }))
+    }
+}
+
+impl<'a> Drop for DocIterator<'a> {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe { zvec_rust_sys::zvec_doc_iterator_close(self.handle) };
+        }
+    }
+}
 
 /// Parses a C array of `zvec_write_result_t` into a `WriteResult`.
 fn collect_write_results(

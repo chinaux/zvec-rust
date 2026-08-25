@@ -68,6 +68,58 @@ impl Drop for IvfQueryParams {
     }
 }
 
+/// IVF RaBitQ-specific query parameters.
+pub struct IvfRabitqQueryParams {
+    pub(crate) handle: *mut zvec_rust_sys::zvec_ivf_rabitq_query_params_t,
+}
+
+impl IvfRabitqQueryParams {
+    /// Creates new IVF RaBitQ query parameters.
+    pub fn new(nprobe: i32, radius: f32, is_linear: bool, is_using_refiner: bool) -> Self {
+        let handle = unsafe {
+            zvec_rust_sys::zvec_query_params_ivf_rabitq_create(
+                nprobe,
+                radius,
+                is_linear,
+                is_using_refiner,
+            )
+        };
+        IvfRabitqQueryParams { handle }
+    }
+
+    /// Sets the number of probe clusters.
+    pub fn set_nprobe(&mut self, nprobe: i32) -> Result<()> {
+        check_error(unsafe {
+            zvec_rust_sys::zvec_query_params_ivf_rabitq_set_nprobe(self.handle, nprobe)
+        })
+    }
+
+    /// Returns the number of probe clusters.
+    pub fn nprobe(&self) -> i32 {
+        unsafe { zvec_rust_sys::zvec_query_params_ivf_rabitq_get_nprobe(self.handle) }
+    }
+
+    /// Sets the candidate expansion factor used by the refiner.
+    pub fn set_scale_factor(&mut self, scale_factor: f32) -> Result<()> {
+        check_error(unsafe {
+            zvec_rust_sys::zvec_query_params_ivf_rabitq_set_scale_factor(self.handle, scale_factor)
+        })
+    }
+
+    /// Returns the candidate expansion factor used by the refiner.
+    pub fn scale_factor(&self) -> f32 {
+        unsafe { zvec_rust_sys::zvec_query_params_ivf_rabitq_get_scale_factor(self.handle) }
+    }
+}
+
+impl Drop for IvfRabitqQueryParams {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe { zvec_rust_sys::zvec_query_params_ivf_rabitq_destroy(self.handle) };
+        }
+    }
+}
+
 /// Flat-specific query parameters.
 pub struct FlatQueryParams {
     pub(crate) handle: *mut zvec_rust_sys::zvec_flat_query_params_t,
@@ -387,6 +439,15 @@ impl SearchQuery {
         Ok(())
     }
 
+    /// Sets IVF RaBitQ query parameters (takes ownership on success).
+    pub fn set_ivf_rabitq_params(&mut self, mut params: IvfRabitqQueryParams) -> Result<()> {
+        check_error(unsafe {
+            zvec_rust_sys::zvec_vector_query_set_ivf_rabitq_params(self.handle, params.handle)
+        })?;
+        params.handle = std::ptr::null_mut();
+        Ok(())
+    }
+
     /// Sets Flat query parameters (takes ownership on success).
     pub fn set_flat_params(&mut self, mut params: FlatQueryParams) -> Result<()> {
         check_error(unsafe {
@@ -653,6 +714,19 @@ impl GroupBySearchQuery {
         Ok(())
     }
 
+    /// Sets IVF RaBitQ query parameters (takes ownership on success).
+    pub fn set_ivf_rabitq_params(&mut self, mut params: IvfRabitqQueryParams) -> Result<()> {
+        check_error(unsafe {
+            zvec_rust_sys::zvec_group_by_vector_query_set_ivf_rabitq_params(
+                self.handle,
+                params.handle,
+            )
+        })?;
+        // Ownership transferred to query only on success; prevent double-free
+        params.handle = std::ptr::null_mut();
+        Ok(())
+    }
+
     /// Sets Flat query parameters (takes ownership on success).
     pub fn set_flat_params(&mut self, mut params: FlatQueryParams) -> Result<()> {
         check_error(unsafe {
@@ -840,5 +914,15 @@ mod tests {
         assert_eq!(params.list_size(), 200);
         params.set_list_size(300).expect("set list_size");
         assert_eq!(params.list_size(), 300);
+    }
+
+    #[test]
+    fn test_ivf_rabitq_query_params_create_and_getters() {
+        let mut params = IvfRabitqQueryParams::new(16, 0.0, false, true);
+        assert_eq!(params.nprobe(), 16);
+        params.set_nprobe(32).expect("set nprobe");
+        assert_eq!(params.nprobe(), 32);
+        params.set_scale_factor(2.5).expect("set scale_factor");
+        assert!((params.scale_factor() - 2.5).abs() < f32::EPSILON);
     }
 }

@@ -1208,3 +1208,203 @@ fn test_diskann_collection_end_to_end() {
     assert!(!results.is_empty());
     assert_eq!(results[0].get_pk(), Some("pk_10"));
 }
+
+// =============================================================================
+// Document Iterator Tests
+// =============================================================================
+
+#[test]
+fn test_iterator_traverses_all_docs() {
+    ensure_initialized();
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let collection = create_test_collection(tmp_dir.path());
+    let pks = insert_test_docs(&collection, 10);
+
+    let mut seen: Vec<String> = Vec::new();
+    for doc in collection.iter().unwrap() {
+        let doc = doc.expect("iterator should yield documents");
+        seen.push(doc.get_pk().expect("doc should have a pk").to_string());
+    }
+
+    assert_eq!(seen.len(), 10);
+    seen.sort();
+    let mut expected = pks;
+    expected.sort();
+    assert_eq!(seen, expected);
+}
+
+#[test]
+fn test_iterator_empty_collection() {
+    ensure_initialized();
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let collection = create_test_collection(tmp_dir.path());
+
+    let mut iter = collection.iter().unwrap();
+    assert!(iter.next().is_none());
+}
+
+#[test]
+fn test_iterator_with_output_fields() {
+    ensure_initialized();
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let collection = create_test_collection(tmp_dir.path());
+    insert_test_docs(&collection, 3);
+
+    // Only request the "id" scalar field and skip vectors.
+    for doc in collection.iter_with_options(Some(&["id"]), false).unwrap() {
+        let doc = doc.expect("iterator should yield documents");
+        assert!(doc.has_field("id"));
+        assert!(!doc.has_field("score"));
+        assert!(doc.get_vector_f32("embedding").is_err());
+    }
+}
+
+#[test]
+fn test_iterator_with_empty_output_fields() {
+    ensure_initialized();
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let collection = create_test_collection(tmp_dir.path());
+    insert_test_docs(&collection, 2);
+
+    // An empty output-field list returns only the primary key / system columns.
+    let mut count = 0;
+    for doc in collection.iter_with_options(Some(&[]), false).unwrap() {
+        let doc = doc.expect("iterator should yield documents");
+        assert!(doc.get_pk().is_some());
+        assert!(!doc.has_field("id"));
+        count += 1;
+    }
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn test_iterator_snapshot_isolation() {
+    ensure_initialized();
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let collection = create_test_collection(tmp_dir.path());
+    insert_test_docs(&collection, 5);
+
+    // The iterator takes a snapshot at creation time; documents inserted
+    // afterwards must not be visible.
+    let mut iter = collection.iter().unwrap();
+
+    let mut docs = Vec::new();
+    for i in 100..103 {
+        let mut doc = Doc::new().unwrap();
+        let pk = format!("pk_{}", i);
+        doc.set_pk(&pk);
+        doc.add_string("id", &pk).unwrap();
+        doc.add_string("category", "extra").unwrap();
+        doc.add_vector_f32("embedding", &[0.1, 0.2, 0.3, 0.4])
+            .unwrap();
+        docs.push(doc);
+    }
+    let doc_refs: Vec<&Doc> = docs.iter().collect();
+    let result = collection.insert(&doc_refs).unwrap();
+    assert_eq!(result.success_count, 3);
+
+    let mut count = 0;
+    for doc in iter.by_ref() {
+        doc.expect("iterator should yield documents");
+        count += 1;
+    }
+    assert_eq!(count, 5);
+}
+
+#[test]
+fn test_iterator_partial_consumption() {
+    ensure_initialized();
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let collection = create_test_collection(tmp_dir.path());
+    insert_test_docs(&collection, 10);
+
+    // Consume only part of the iterator, then drop it early.
+    {
+        let mut iter = collection.iter().unwrap();
+        iter.next().unwrap().expect("first doc");
+        iter.next().unwrap().expect("second doc");
+    }
+
+    // The collection must remain fully usable afterwards.
+    let fetched = collection.fetch(&["pk_0"]).unwrap();
+    assert_eq!(fetched.len(), 1);
+}
+
+// =============================================================================
+// IVF RaBitQ Index Tests
+// =============================================================================
+
+#[test]
+fn test_index_params_ivf_rabitq() {
+    ensure_initialized();
+
+    let params = IndexParams::ivf_rabitq(MetricType::L2, 16, 7, 0).unwrap();
+    assert_eq!(params.index_type(), IndexType::IvfRabitq);
+    assert_eq!(params.metric_type(), MetricType::L2);
+}
+
+#[test]
+fn test_ivf_rabitq_collection_end_to_end() {
+    ensure_initialized();
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let dir = tmp_dir.path().join("zvec_ivf_rabitq_data");
+
+    let dimension: u32 = 64;
+    let schema = CollectionSchema::builder("ivf_rabitq_collection")
+        .add_field(FieldSchema::new("id", DataType::String, false, 0).unwrap())
+        .add_vector_field(
+            "embedding",
+            DataType::VectorFp32,
+            dimension,
+            IndexParams::ivf_rabitq(MetricType::L2, 4, 7, 0).unwrap(),
+        )
+        .build()
+        .expect("failed to build ivf rabitq schema");
+
+    let collection = match Collection::create_and_open(dir.to_str().unwrap(), &schema, None) {
+        Ok(c) => c,
+        // RaBitQ is only supported on Linux x86_64. On other platforms the
+        // engine reports NotSupported; skip the end-to-end flow gracefully.
+        Err(e) if e.code == ErrorCode::NotSupported => {
+            eprintln!("skipping ivf rabitq end-to-end test: {}", e.message);
+            return;
+        }
+        Err(e) => panic!("failed to create collection with ivf rabitq index: {:?}", e),
+    };
+
+    let mut docs = Vec::new();
+    for i in 0..50 {
+        let mut doc = Doc::new().unwrap();
+        let pk = format!("pk_{}", i);
+        doc.set_pk(&pk);
+        doc.add_string("id", &pk).unwrap();
+        let vector: Vec<f32> = (0..dimension)
+            .map(|d| ((i as u32 * d) % 7) as f32 + 0.1)
+            .collect();
+        doc.add_vector_f32("embedding", &vector).unwrap();
+        docs.push(doc);
+    }
+    let doc_refs: Vec<&Doc> = docs.iter().collect();
+    let result = collection.insert(&doc_refs).unwrap();
+    assert_eq!(result.success_count, 50);
+    assert_eq!(result.error_count, 0);
+
+    collection.flush().expect("flush failed");
+
+    // Query with explicit IVF RaBitQ query parameters
+    let query_vec: Vec<f32> = (0..dimension).map(|d| (d % 5) as f32 + 0.2).collect();
+    let mut query = SearchQuery::new("embedding", &query_vec, 5).unwrap();
+    query
+        .set_ivf_rabitq_params(IvfRabitqQueryParams::new(4, 0.0, false, false))
+        .expect("set ivf rabitq params failed");
+    let results = collection.query(&query).expect("ivf rabitq query failed");
+    assert!(!results.is_empty());
+    assert!(results.len() <= 5);
+}

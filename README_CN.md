@@ -51,7 +51,7 @@ Rust SDK 依赖 zvec C 库（`libzvec_c_api`）。可通过以下任一方式提
 
 ```toml
 [dependencies]
-zvec-rust = "0.6.0"
+zvec-rust = "0.7.0"
 ```
 
 ### 方案二：自行编译
@@ -223,6 +223,7 @@ let schema = CollectionSchema::builder("name")
 | `collection.multi_query(&query)` | 多路检索 + RRF / 加权重排 |
 | `collection.fetch(&pks)` | 按主键获取 |
 | `collection.fetch_with_options(&pks, fields, include_vector)` | 按主键获取并控制输出字段 |
+| `collection.iter()` / `iter_with_options(fields, include_vector)` | 遍历全部文档（隔离快照） |
 | `collection.create_index(field, params)` / `drop_index(field)` | 运行时索引管理 |
 | `collection.optimize()` | 重建索引 / 合并段 |
 | `collection.stats()` | 获取集合统计信息 |
@@ -308,6 +309,7 @@ mq.set_rerank_weighted(&[0.7, 0.3])?;  // 每个子查询的权重
 | HNSW | `IndexParams::hnsw(metric, m, ef)` | 图索引（推荐） |
 | HNSW+量化 | `IndexParams::hnsw_with_quantize(...)` | 带量化的 HNSW |
 | IVF | `IndexParams::ivf(metric, nlist, niters, soar)` | 倒排文件索引 |
+| IVF RaBitQ | `IndexParams::ivf_rabitq(metric, nlist, total_bits, sample_count)` | 带 RaBitQ 量化的 IVF 索引 |
 | Flat | `IndexParams::flat(metric)` | 暴力搜索索引 |
 | DiskANN | `IndexParams::diskann(metric, max_degree, list_size, pq_chunk_num)` | 基于磁盘的图索引，适合大规模数据集（仅支持 Linux x86_64） |
 | Invert | `IndexParams::invert(range, wildcard)` | 标量字段索引 |

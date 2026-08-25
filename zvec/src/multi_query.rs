@@ -9,6 +9,7 @@ use crate::error::{check_error, to_cstring, Error, ErrorCode, Result};
 use crate::query::Fts;
 use crate::query::{
     DiskannQueryParams, FlatQueryParams, FtsQueryParams, HnswQueryParams, IvfQueryParams,
+    IvfRabitqQueryParams,
 };
 
 /// A multi-query operation combining multiple [`SubQuery`] objects.
@@ -268,6 +269,15 @@ impl SubQuery {
         Ok(())
     }
 
+    /// Sets IVF RaBitQ query parameters (takes ownership on success).
+    pub fn set_ivf_rabitq_params(&mut self, mut params: IvfRabitqQueryParams) -> Result<()> {
+        check_error(unsafe {
+            zvec_rust_sys::zvec_sub_query_set_ivf_rabitq_params(self.handle, params.handle)
+        })?;
+        params.handle = std::ptr::null_mut();
+        Ok(())
+    }
+
     /// Sets Flat query parameters (takes ownership on success).
     pub fn set_flat_params(&mut self, mut params: FlatQueryParams) -> Result<()> {
         check_error(unsafe {
@@ -374,6 +384,18 @@ mod tests {
 
         let params = FtsQueryParams::new(Some("AND")).expect("create fts params");
         sub.set_fts_params(params).expect("set fts params");
+    }
+
+    #[test]
+    fn sub_query_set_ivf_rabitq_params() {
+        let mut sub = SubQuery::new().expect("create sub-query");
+        sub.set_field_name("embedding").expect("set field name");
+        sub.set_query_vector(&[0.1, 0.2, 0.3, 0.4])
+            .expect("set query vector");
+
+        let params = IvfRabitqQueryParams::new(16, 0.0, false, false);
+        sub.set_ivf_rabitq_params(params)
+            .expect("set ivf rabitq params");
     }
 
     #[test]

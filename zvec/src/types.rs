@@ -127,6 +127,8 @@ pub enum IndexType {
     Flat = 3,
     /// DiskANN disk-based graph index for large datasets.
     Diskann = 5,
+    /// IVF index with RaBitQ quantization.
+    IvfRabitq = 7,
     /// Inverted index for scalar field filtering.
     Invert = 10,
     /// Full-text search index.
@@ -140,6 +142,7 @@ impl From<u32> for IndexType {
             2 => IndexType::Ivf,
             3 => IndexType::Flat,
             5 => IndexType::Diskann,
+            7 => IndexType::IvfRabitq,
             10 => IndexType::Invert,
             11 => IndexType::Fts,
             _ => IndexType::Undefined,
@@ -211,6 +214,8 @@ pub enum QuantizeType {
     Int8 = 2,
     /// 4-bit integer quantization.
     Int4 = 3,
+    /// RaBitQ quantization.
+    Rabitq = 4,
 }
 
 impl From<u32> for QuantizeType {
@@ -219,6 +224,7 @@ impl From<u32> for QuantizeType {
             1 => QuantizeType::Fp16,
             2 => QuantizeType::Int8,
             3 => QuantizeType::Int4,
+            4 => QuantizeType::Rabitq,
             _ => QuantizeType::Undefined,
         }
     }
@@ -438,6 +444,7 @@ mod tests {
         assert_eq!(IndexType::from(2), IndexType::Ivf);
         assert_eq!(IndexType::from(3), IndexType::Flat);
         assert_eq!(IndexType::from(5), IndexType::Diskann);
+        assert_eq!(IndexType::from(7), IndexType::IvfRabitq);
         assert_eq!(IndexType::from(10), IndexType::Invert);
     }
 
@@ -456,6 +463,7 @@ mod tests {
             IndexType::Ivf,
             IndexType::Flat,
             IndexType::Diskann,
+            IndexType::IvfRabitq,
             IndexType::Invert,
         ];
         for it in all {
@@ -522,11 +530,12 @@ mod tests {
         assert_eq!(QuantizeType::from(1), QuantizeType::Fp16);
         assert_eq!(QuantizeType::from(2), QuantizeType::Int8);
         assert_eq!(QuantizeType::from(3), QuantizeType::Int4);
+        assert_eq!(QuantizeType::from(4), QuantizeType::Rabitq);
     }
 
     #[test]
     fn quantize_type_from_u32_unknown() {
-        assert_eq!(QuantizeType::from(4), QuantizeType::Undefined);
+        assert_eq!(QuantizeType::from(5), QuantizeType::Undefined);
         assert_eq!(QuantizeType::from(99), QuantizeType::Undefined);
     }
 
@@ -537,6 +546,7 @@ mod tests {
             QuantizeType::Fp16,
             QuantizeType::Int8,
             QuantizeType::Int4,
+            QuantizeType::Rabitq,
         ];
         for qt in all {
             let numeric: u32 = qt.into();

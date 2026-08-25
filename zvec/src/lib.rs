@@ -46,7 +46,8 @@ pub mod schema;
 pub mod types;
 
 pub use collection::{
-    Collection, CollectionOptions, CollectionStats, DocWriteResult, IndexStat, WriteResult,
+    Collection, CollectionOptions, CollectionStats, DocIterator, DocWriteResult, IndexStat,
+    WriteResult,
 };
 pub use config::{initialize, is_initialized, shutdown, version, ConfigBuilder};
 pub use doc::Doc;
@@ -54,7 +55,7 @@ pub use error::{Error, ErrorCode, Result};
 pub use multi_query::{MultiQuery, SubQuery};
 pub use query::{
     DiskannQueryParams, FlatQueryParams, Fts, FtsQueryParams, GroupBySearchQuery, HnswQueryParams,
-    IvfQueryParams, SearchQuery, SearchQueryBuilder,
+    IvfQueryParams, IvfRabitqQueryParams, SearchQuery, SearchQueryBuilder,
 };
 pub use schema::{CollectionSchema, FieldSchema, IndexParams};
 pub use types::{DataType, DocOperator, IndexType, LogLevel, MetricType, QuantizeType};
@@ -70,8 +71,8 @@ pub use zvec_rust_sys as sys;
 pub mod prelude {
     pub use crate::{
         initialize, is_initialized, version, Collection, CollectionOptions, CollectionSchema,
-        CollectionStats, ConfigBuilder, DataType, Doc, Error, ErrorCode, FieldSchema, IndexParams,
-        IndexStat, MetricType, MultiQuery, QuantizeType, Result, SearchQuery, SubQuery,
-        WriteResult,
+        CollectionStats, ConfigBuilder, DataType, Doc, DocIterator, Error, ErrorCode, FieldSchema,
+        IndexParams, IndexStat, MetricType, MultiQuery, QuantizeType, Result, SearchQuery,
+        SubQuery, WriteResult,
     };
 }

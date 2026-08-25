@@ -103,6 +103,45 @@ impl IndexParams {
         }
     }
 
+    /// Creates IVF RaBitQ index parameters.
+    ///
+    /// IVF RaBitQ combines inverted-file clustering with RaBitQ quantization for
+    /// memory-efficient approximate search.
+    ///
+    /// - `nlist`: number of cluster centers
+    /// - `total_bits`: total bits for RaBitQ quantization
+    /// - `sample_count`: sample count for training; `0` uses all vectors
+    pub fn ivf_rabitq(
+        metric: MetricType,
+        nlist: i32,
+        total_bits: i32,
+        sample_count: i32,
+    ) -> Result<Self> {
+        unsafe {
+            let handle = zvec_rust_sys::zvec_index_params_create(IndexType::IvfRabitq as u32);
+            if handle.is_null() {
+                return Err(Error {
+                    code: ErrorCode::InternalError,
+                    message: "failed to create IVF RaBitQ index params".into(),
+                });
+            }
+            check_error(zvec_rust_sys::zvec_index_params_set_metric_type(
+                handle,
+                metric as u32,
+            ))?;
+            check_error(zvec_rust_sys::zvec_index_params_set_ivf_rabitq_params(
+                handle,
+                nlist,
+                total_bits,
+                sample_count,
+            ))?;
+            Ok(IndexParams {
+                handle,
+                owned: true,
+            })
+        }
+    }
+
     /// Creates Flat index parameters.
     pub fn flat(metric: MetricType) -> Result<Self> {
         unsafe {

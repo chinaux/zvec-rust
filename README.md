@@ -51,7 +51,7 @@ Add `zvec-rust` to your `Cargo.toml`. The default `bundled` feature automaticall
 
 ```toml
 [dependencies]
-zvec-rust = "0.6.0"
+zvec-rust = "0.7.0"
 ```
 
 ### Option 2: Custom Build
@@ -223,6 +223,7 @@ let schema = CollectionSchema::builder("name")
 | `collection.multi_query(&query)` | Multi-route search with RRF / weighted rerank |
 | `collection.fetch(&pks)` | Fetch by primary keys |
 | `collection.fetch_with_options(&pks, fields, include_vector)` | Fetch with output-field control |
+| `collection.iter()` / `iter_with_options(fields, include_vector)` | Iterate over all documents (isolated snapshot) |
 | `collection.create_index(field, params)` / `drop_index(field)` | Runtime index management |
 | `collection.optimize()` | Rebuild indexes / merge segments |
 | `collection.stats()` | Get collection statistics |
@@ -308,6 +309,7 @@ Available distance metrics: `L2`, `Ip`, `Cosine`, `MipsL2`.
 | HNSW | `IndexParams::hnsw(metric, m, ef)` | Graph index (recommended) |
 | HNSW+Q | `IndexParams::hnsw_with_quantize(...)` | HNSW with quantization |
 | IVF | `IndexParams::ivf(metric, nlist, niters, soar)` | Inverted file index |
+| IVF RaBitQ | `IndexParams::ivf_rabitq(metric, nlist, total_bits, sample_count)` | IVF with RaBitQ quantization |
 | Flat | `IndexParams::flat(metric)` | Brute-force index |
 | DiskANN | `IndexParams::diskann(metric, max_degree, list_size, pq_chunk_num)` | Disk-based graph index for large datasets (Linux x86_64 only) |
 | Invert | `IndexParams::invert(range, wildcard)` | Scalar field index |

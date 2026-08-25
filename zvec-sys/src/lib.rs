@@ -109,6 +109,13 @@ pub struct zvec_ivf_query_params_t {
     _private: [u8; 0],
 }
 
+/// Opaque pointer to IVF RaBitQ index query parameters.
+/// Configures nprobe, scale factor, and refiner settings for IVF RaBitQ searches.
+#[repr(C)]
+pub struct zvec_ivf_rabitq_query_params_t {
+    _private: [u8; 0],
+}
+
 /// Opaque pointer to flat index query parameters.
 /// Configures scale factor and refiner settings for brute-force searches.
 #[repr(C)]
@@ -155,6 +162,21 @@ pub struct zvec_multi_query_t {
 /// Carries a per-field vector or sparse vector and index-specific parameters.
 #[repr(C)]
 pub struct zvec_sub_query_t {
+    _private: [u8; 0],
+}
+
+/// Opaque pointer to a document iterator for full collection traversal.
+/// Created by `zvec_collection_create_iterator`, released by `zvec_doc_iterator_close`.
+/// Iterates over an isolated snapshot taken at creation time.
+#[repr(C)]
+pub struct zvec_doc_iterator_t {
+    _private: [u8; 0],
+}
+
+/// Opaque pointer to document iterator options.
+/// Controls which scalar fields and whether vectors are returned.
+#[repr(C)]
+pub struct zvec_iterator_options_t {
     _private: [u8; 0],
 }
 
@@ -287,6 +309,8 @@ pub const ZVEC_INDEX_TYPE_HNSW_RABITQ: zvec_index_type_t = 4;
 pub const ZVEC_INDEX_TYPE_DISKANN: zvec_index_type_t = 5;
 /// Vamana disk-based graph index.
 pub const ZVEC_INDEX_TYPE_VAMANA: zvec_index_type_t = 6;
+/// IVF index with RaBitQ quantization.
+pub const ZVEC_INDEX_TYPE_IVF_RABITQ: zvec_index_type_t = 7;
 /// Inverted index for scalar field filtering.
 pub const ZVEC_INDEX_TYPE_INVERT: zvec_index_type_t = 10;
 /// Full-text search index.
@@ -319,6 +343,8 @@ pub const ZVEC_QUANTIZE_TYPE_FP16: zvec_quantize_type_t = 1;
 pub const ZVEC_QUANTIZE_TYPE_INT8: zvec_quantize_type_t = 2;
 /// INT4 (4-bit integer) quantization.
 pub const ZVEC_QUANTIZE_TYPE_INT4: zvec_quantize_type_t = 3;
+/// RaBitQ quantization.
+pub const ZVEC_QUANTIZE_TYPE_RABITQ: zvec_quantize_type_t = 4;
 
 // =============================================================================
 // Log Level Constants
@@ -641,6 +667,11 @@ extern "C" {
         out_saturate_graph: *mut bool,
         out_use_contiguous_memory: *mut bool,
     ) -> zvec_error_code_t;
+    pub fn zvec_index_params_set_vamana_two_pass_build(
+        params: *mut zvec_index_params_t,
+        two_pass_build: bool,
+    ) -> zvec_error_code_t;
+    pub fn zvec_index_params_get_vamana_two_pass_build(params: *const zvec_index_params_t) -> bool;
     pub fn zvec_index_params_set_diskann_params(
         params: *mut zvec_index_params_t,
         max_degree: c_int,
@@ -650,6 +681,18 @@ extern "C" {
     pub fn zvec_index_params_get_diskann_max_degree(params: *const zvec_index_params_t) -> c_int;
     pub fn zvec_index_params_get_diskann_list_size(params: *const zvec_index_params_t) -> c_int;
     pub fn zvec_index_params_get_diskann_pq_chunk_num(params: *const zvec_index_params_t) -> c_int;
+    pub fn zvec_index_params_set_ivf_rabitq_params(
+        params: *mut zvec_index_params_t,
+        nlist: c_int,
+        total_bits: c_int,
+        sample_count: c_int,
+    ) -> zvec_error_code_t;
+    pub fn zvec_index_params_get_ivf_rabitq_params(
+        params: *const zvec_index_params_t,
+        out_nlist: *mut c_int,
+        out_total_bits: *mut c_int,
+        out_sample_count: *mut c_int,
+    ) -> zvec_error_code_t;
     pub fn zvec_index_params_set_invert_params(
         params: *mut zvec_index_params_t,
         enable_range_opt: bool,
@@ -1030,6 +1073,32 @@ extern "C" {
     ) -> zvec_error_code_t;
 
     // -------------------------------------------------------------------------
+    // Document Iterator
+    // Functions for full collection traversal over an isolated snapshot.
+    // -------------------------------------------------------------------------
+    pub fn zvec_iterator_options_create() -> *mut zvec_iterator_options_t;
+    pub fn zvec_iterator_options_destroy(options: *mut zvec_iterator_options_t);
+    pub fn zvec_iterator_options_set_output_fields(
+        options: *mut zvec_iterator_options_t,
+        output_fields: *const *const c_char,
+        count: usize,
+    ) -> zvec_error_code_t;
+    pub fn zvec_iterator_options_set_include_vector(
+        options: *mut zvec_iterator_options_t,
+        include: bool,
+    ) -> zvec_error_code_t;
+    pub fn zvec_collection_create_iterator(
+        collection: *mut zvec_collection_t,
+        options: *const zvec_iterator_options_t,
+        out_iter: *mut *mut zvec_doc_iterator_t,
+    ) -> zvec_error_code_t;
+    pub fn zvec_doc_iterator_next(
+        iter: *mut zvec_doc_iterator_t,
+        out_doc: *mut *mut zvec_doc_t,
+    ) -> zvec_error_code_t;
+    pub fn zvec_doc_iterator_close(iter: *mut zvec_doc_iterator_t);
+
+    // -------------------------------------------------------------------------
     // HNSW Query Parameters
     // Functions for creating and configuring HNSW index query parameters.
     // -------------------------------------------------------------------------
@@ -1099,6 +1168,53 @@ extern "C" {
     ) -> zvec_error_code_t;
     pub fn zvec_query_params_ivf_get_is_using_refiner(
         params: *const zvec_ivf_query_params_t,
+    ) -> bool;
+
+    // -------------------------------------------------------------------------
+    // IVF RaBitQ Query Parameters
+    // Functions for creating and configuring IVF RaBitQ index query parameters.
+    // -------------------------------------------------------------------------
+    pub fn zvec_query_params_ivf_rabitq_create(
+        nprobe: c_int,
+        radius: f32,
+        is_linear: bool,
+        is_using_refiner: bool,
+    ) -> *mut zvec_ivf_rabitq_query_params_t;
+    pub fn zvec_query_params_ivf_rabitq_destroy(params: *mut zvec_ivf_rabitq_query_params_t);
+    pub fn zvec_query_params_ivf_rabitq_set_nprobe(
+        params: *mut zvec_ivf_rabitq_query_params_t,
+        nprobe: c_int,
+    ) -> zvec_error_code_t;
+    pub fn zvec_query_params_ivf_rabitq_get_nprobe(
+        params: *const zvec_ivf_rabitq_query_params_t,
+    ) -> c_int;
+    pub fn zvec_query_params_ivf_rabitq_set_scale_factor(
+        params: *mut zvec_ivf_rabitq_query_params_t,
+        scale_factor: f32,
+    ) -> zvec_error_code_t;
+    pub fn zvec_query_params_ivf_rabitq_get_scale_factor(
+        params: *const zvec_ivf_rabitq_query_params_t,
+    ) -> f32;
+    pub fn zvec_query_params_ivf_rabitq_set_radius(
+        params: *mut zvec_ivf_rabitq_query_params_t,
+        radius: f32,
+    ) -> zvec_error_code_t;
+    pub fn zvec_query_params_ivf_rabitq_get_radius(
+        params: *const zvec_ivf_rabitq_query_params_t,
+    ) -> f32;
+    pub fn zvec_query_params_ivf_rabitq_set_is_linear(
+        params: *mut zvec_ivf_rabitq_query_params_t,
+        is_linear: bool,
+    ) -> zvec_error_code_t;
+    pub fn zvec_query_params_ivf_rabitq_get_is_linear(
+        params: *const zvec_ivf_rabitq_query_params_t,
+    ) -> bool;
+    pub fn zvec_query_params_ivf_rabitq_set_is_using_refiner(
+        params: *mut zvec_ivf_rabitq_query_params_t,
+        is_using_refiner: bool,
+    ) -> zvec_error_code_t;
+    pub fn zvec_query_params_ivf_rabitq_get_is_using_refiner(
+        params: *const zvec_ivf_rabitq_query_params_t,
     ) -> bool;
 
     // -------------------------------------------------------------------------
@@ -1295,6 +1411,10 @@ extern "C" {
         query: *mut zvec_vector_query_t,
         ivf_params: *mut zvec_ivf_query_params_t,
     ) -> zvec_error_code_t;
+    pub fn zvec_vector_query_set_ivf_rabitq_params(
+        query: *mut zvec_vector_query_t,
+        ivf_rabitq_params: *mut zvec_ivf_rabitq_query_params_t,
+    ) -> zvec_error_code_t;
     pub fn zvec_vector_query_set_flat_params(
         query: *mut zvec_vector_query_t,
         flat_params: *mut zvec_flat_query_params_t,
@@ -1391,6 +1511,10 @@ extern "C" {
     pub fn zvec_group_by_vector_query_set_ivf_params(
         query: *mut zvec_group_by_vector_query_t,
         ivf_params: *mut zvec_ivf_query_params_t,
+    ) -> zvec_error_code_t;
+    pub fn zvec_group_by_vector_query_set_ivf_rabitq_params(
+        query: *mut zvec_group_by_vector_query_t,
+        ivf_rabitq_params: *mut zvec_ivf_rabitq_query_params_t,
     ) -> zvec_error_code_t;
     pub fn zvec_group_by_vector_query_set_flat_params(
         query: *mut zvec_group_by_vector_query_t,
@@ -1492,6 +1616,10 @@ extern "C" {
     pub fn zvec_sub_query_set_ivf_params(
         query: *mut zvec_sub_query_t,
         ivf_params: *mut zvec_ivf_query_params_t,
+    ) -> zvec_error_code_t;
+    pub fn zvec_sub_query_set_ivf_rabitq_params(
+        query: *mut zvec_sub_query_t,
+        ivf_rabitq_params: *mut zvec_ivf_rabitq_query_params_t,
     ) -> zvec_error_code_t;
     pub fn zvec_sub_query_set_flat_params(
         query: *mut zvec_sub_query_t,

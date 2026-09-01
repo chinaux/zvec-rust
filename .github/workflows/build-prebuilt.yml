@@ -21,18 +21,40 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-15
             lib_name: libzvec_c_api.dylib
+            container: ''
           # - target: x86_64-apple-darwin
           #   os: macos-13
           #   lib_name: libzvec_c_api.dylib
+          #   container: ''
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
             lib_name: libzvec_c_api.so
+            # Pinned dated tag, same batch as upstream zvec's
+            # _build_prebuilt.yml. manylinux_2_28 = glibc 2.28, so the
+            # prebuilt .so works on glibc distros as old as CentOS 8 /
+            # Ubuntu 20.04.
+            container: 'quay.io/pypa/manylinux_2_28_x86_64:2026.03.01-1'
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
             lib_name: libzvec_c_api.so
+            # Same glibc 2.28 baseline as the x86_64 gnu build (upstream
+            # builds this target in the same container family).
+            container: 'quay.io/pypa/manylinux_2_28_aarch64:2026.03.01-1'
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            lib_name: libzvec_c_api.so
+            # musllinux_1_2 (Alpine/musl) covers musl distros, pinned to the
+            # same tag as upstream zvec's _build_prebuilt.yml and its
+            # 09-musllinux-build.yml CI job.
+            container: 'quay.io/pypa/musllinux_1_2_x86_64:2026.03.01-1'
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            lib_name: libzvec_c_api.so
+            container: 'quay.io/pypa/musllinux_1_2_aarch64:2026.03.01-1'
           - target: x86_64-pc-windows-msvc
             os: windows-2025
             lib_name: zvec_c_api.dll
+            container: ''
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     env:
@@ -52,17 +74,19 @@ jobs:
         with:
           python-version: '3.10'
 
-      # Use manylinux_2_28 container for Linux x64 to ensure broad GLIBC compatibility.
-      # Mount the entire workspace (not just vendor/zvec) so that submodule .git
-      # files can resolve to the parent repo's .git/modules/ directory — needed
-      # by zvec's apply_patch_once() which calls `git apply` inside arrow.
-      - name: Build zvec C library (Linux x64 manylinux)
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+      # Linux builds run inside pinned pypa containers, aligned with upstream
+      # zvec's _build_prebuilt.yml: manylinux_2_28 (glibc 2.28) for the gnu
+      # targets, musllinux_1_2 (musl) for the musl targets. Mount the entire
+      # workspace (not just vendor/zvec) so that submodule .git files can
+      # resolve to the parent repo's .git/modules/ directory — needed by
+      # zvec's apply_patch_once() which calls `git apply` inside arrow.
+      - name: Build zvec C library (Linux gnu, manylinux_2_28 / glibc 2.28)
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           docker run --rm \
             -v "$PWD:/workspace" \
             -w /workspace/vendor/zvec \
-            quay.io/pypa/manylinux_2_28_x86_64 \
+            "${{ matrix.container }}" \
             bash -c "
               dnf install -y cmake gcc-c++ git libaio-devel
               mkdir -p build && cd build
@@ -71,16 +95,36 @@ jobs:
             "
         shell: bash
 
+      - name: Build zvec C library (Linux musl, musllinux_1_2)
+        if: matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          docker run --rm \
+            -v "$PWD:/workspace" \
+            -w /workspace/vendor/zvec \
+            "${{ matrix.container }}" \
+            bash -c '
+              # The image ships CPython under /opt/python; install pinned
+              # cmake 3.30.0 + ninja via its pip so they shadow the
+              # image-bundled CMake 4.x — same approach as the upstream
+              # zvec musllinux jobs.
+              PYBIN=$(ls -d /opt/python/cp3*/bin 2>/dev/null | head -1)
+              export PATH="$PYBIN:$PATH"
+              python -m pip install --upgrade pip
+              python -m pip install cmake==3.30.0 ninja==1.11.1
+              mkdir -p build && cd build
+              cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_C_BINDINGS=ON -DBUILD_TOOLS=OFF
+              cmake --build . --config Release --parallel $(nproc)
+            '
+        shell: bash
+
+      # macOS: build via scikit-build (pip), which places the outputs under
+      # vendor/zvec/build like the container builds above.
       - name: Build zvec C library (Unix)
-        if: runner.os != 'Windows' && matrix.target != 'x86_64-unknown-linux-gnu'
+        if: runner.os == 'macOS'
         run: |
           cd vendor/zvec
 
-          if [[ "${{ matrix.target }}" == *apple* ]]; then
-            NPROC=$(sysctl -n hw.ncpu 2>/dev/null || echo 2)
-          else
-            NPROC=$(nproc 2>/dev/null || echo 2)
-          fi
+          NPROC=$(sysctl -n hw.ncpu 2>/dev/null || echo 2)
 
           python -m pip install --upgrade pip pybind11==3.0 cmake==3.30.0 ninja==1.11.1 scikit-build-core setuptools_scm
 

@@ -26,7 +26,13 @@ Safe, idiomatic Rust bindings for the [zvec](https://github.com/alibaba/zvec) ve
 | **macOS** | x86_64 (Intel) | ✅ Clippy + Test | |
 | **Linux** | x86_64 | ✅ Clippy + Test + Fuzz + Coverage + Benchmark | Full CI coverage |
 | **Linux** | ARM64 (AArch64) | ✅ Clippy + Test + Fuzz + Coverage | |
+| **Linux (musl)** | x86_64 | ✅ Prebuilt | Alpine/musl distros; built in `musllinux_1_2`, same baseline as upstream zvec |
+| **Linux (musl)** | ARM64 (AArch64) | ✅ Prebuilt | Alpine/musl distros; built in `musllinux_1_2` |
 | **Windows** | x86_64 (MSVC) | ✅ Clippy + Test | CMake + MSVC toolchain |
+
+> Linux gnu prebuilts target glibc 2.28 (`manylinux_2_28`, same as upstream
+> zvec), so they work on glibc distros as old as CentOS 8 / Ubuntu 20.04.
+> musl prebuilts work on musl distros such as Alpine (musl 1.2+).
 
 > The dynamic library name varies by platform: `libzvec_c_api.dylib` (macOS), `libzvec_c_api.so` (Linux), `zvec_c_api.dll` (Windows).
 

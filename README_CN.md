@@ -26,7 +26,13 @@
 | **macOS** | x86_64 (Intel) | ✅ Clippy + 测试 | |
 | **Linux** | x86_64 | ✅ Clippy + 测试 + 模糊测试 + 覆盖率 + 基准测试 | 完整 CI 覆盖 |
 | **Linux** | ARM64 (AArch64) | ✅ Clippy + 测试 + 模糊测试 + 覆盖率 | |
+| **Linux (musl)** | x86_64 | ✅ 预编译 | Alpine/musl 发行版；在 `musllinux_1_2` 中构建，与上游 zvec 基线一致 |
+| **Linux (musl)** | ARM64 (AArch64) | ✅ 预编译 | Alpine/musl 发行版；在 `musllinux_1_2` 中构建 |
 | **Windows** | x86_64 (MSVC) | ✅ Clippy + 测试 | CMake + MSVC 工具链 |
+
+> Linux gnu 预编译产物面向 glibc 2.28（`manylinux_2_28`，与上游 zvec 一致），
+> 可运行在 CentOS 8 / Ubuntu 20.04 及以上版本的 glibc 发行版；
+> musl 预编译产物可运行在 Alpine（musl 1.2+）等 musl 发行版。
 
 > 动态库文件名因平台而异：`libzvec_c_api.dylib`（macOS）、`libzvec_c_api.so`（Linux）、`zvec_c_api.dll`（Windows）。
 

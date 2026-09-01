@@ -49,7 +49,10 @@ pub use collection::{
     Collection, CollectionOptions, CollectionStats, DocIterator, DocWriteResult, IndexStat,
     WriteResult,
 };
-pub use config::{initialize, is_initialized, shutdown, version, ConfigBuilder};
+pub use config::{
+    get_default_jieba_dict_dir, initialize, is_initialized, set_default_jieba_dict_dir, shutdown,
+    version, ConfigBuilder,
+};
 pub use doc::Doc;
 pub use error::{Error, ErrorCode, Result};
 pub use multi_query::{MultiQuery, SubQuery};

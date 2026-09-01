@@ -602,6 +602,11 @@ extern "C" {
         thread_count: u32,
     ) -> zvec_error_code_t;
     pub fn zvec_config_data_get_optimize_thread_count(config: *const zvec_config_data_t) -> u32;
+    pub fn zvec_config_data_set_jieba_dict_dir(
+        config: *mut zvec_config_data_t,
+        dir: *const c_char,
+    ) -> zvec_error_code_t;
+    pub fn zvec_config_data_get_jieba_dict_dir(config: *const zvec_config_data_t) -> *const c_char;
 
     // -------------------------------------------------------------------------
     // Initialization
@@ -610,6 +615,8 @@ extern "C" {
     pub fn zvec_initialize(config: *const zvec_config_data_t) -> zvec_error_code_t;
     pub fn zvec_shutdown() -> zvec_error_code_t;
     pub fn zvec_is_initialized() -> bool;
+    pub fn zvec_set_default_jieba_dict_dir(dir: *const c_char);
+    pub fn zvec_get_default_jieba_dict_dir() -> *const c_char;
 
     // -------------------------------------------------------------------------
     // Index Parameters
@@ -1736,4 +1743,14 @@ extern "C" {
     pub fn zvec_data_type_to_string(data_type: zvec_data_type_t) -> *const c_char;
     pub fn zvec_index_type_to_string(index_type: zvec_index_type_t) -> *const c_char;
     pub fn zvec_metric_type_to_string(metric_type: zvec_metric_type_t) -> *const c_char;
+}
+
+/// Returns the jieba dict directory discovered at build time, if any.
+///
+/// The build script looks for the cppjieba dictionary files next to the
+/// resolved zvec library (prebuilt `data/jieba_dict/`, an SDK install prefix,
+/// or a zvec source checkout) and records the path here. The high-level
+/// `zvec` crate uses this to auto-register the default jieba dict dir.
+pub fn build_time_jieba_dict_dir() -> Option<&'static str> {
+    option_env!("ZVEC_RUST_JIEBA_DICT_DIR")
 }

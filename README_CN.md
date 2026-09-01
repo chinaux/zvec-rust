@@ -16,6 +16,7 @@
 - **完善的错误处理** — 所有 FFI 调用返回 `Result<T>`，包含详细错误码
 - **尽可能零拷贝** — 最小化 FFI 边界的数据拷贝
 - **预编译库支持** — 自动从 GitHub Releases 下载预编译的 `libzvec_c_api`；高阶用户可通过 `ZVEC_LIB_DIR` 覆盖
+- **FTS jieba 开箱即用** — 预编译包内置 cppjieba 词表（`data/jieba_dict`）；`initialize` 自动发现词表并注册默认 jieba 词表目录，中文全文检索零配置
 
 ## 支持的平台
 
@@ -186,6 +187,8 @@ cargo run --example vector_search
 | `shutdown()` | 释放所有资源 |
 | `version()` | 获取版本字符串 |
 | `is_initialized()` | 检查初始化状态 |
+| `set_default_jieba_dict_dir(dir)` | 设置进程级默认 jieba 词表目录（供 FTS `jieba` 分词器使用） |
+| `get_default_jieba_dict_dir()` | 获取当前默认 jieba 词表目录（未设置时为 `""`） |
 
 使用 [`ConfigBuilder`](zvec/src/config.rs) 自定义内存上限、线程数与日志：
 
@@ -197,6 +200,30 @@ let config = ConfigBuilder::new()
     .build();
 initialize(Some(&config))?;
 ```
+
+#### jieba 分词器词表
+
+FTS `jieba` 分词器需要 cppjieba 的词表文件（`jieba.dict.utf8` 与
+`hmm_model.utf8`）。预编译库已将词表放在 `libzvec_c_api` 同级的
+`data/jieba_dict` 目录下，`initialize` 会自动发现该目录并通过
+`zvec_set_default_jieba_dict_dir` 注册 —— 中文全文检索无需任何额外配置：
+
+```rust
+initialize(None)?; // 自动发现并注册 jieba 词表
+
+let schema = CollectionSchema::builder("articles")
+    .add_field(FieldSchema::new("id", DataType::String, false, 0)?)
+    .add_indexed_field("content", DataType::String,
+        IndexParams::fts(Some("jieba"), None, None)?)
+    .build()?;
+```
+
+如需自定义词表位置，可通过以下任一方式覆盖：
+
+- `ConfigBuilder::new().jieba_dict_dir("/path/to/jieba_dict")` —— 随 `initialize` 生效（优先级最高）
+- `set_default_jieba_dict_dir("/path/to/jieba_dict")` —— 进程级默认值
+- `ZVEC_JIEBA_DICT_DIR` 环境变量 —— 由 zvec 库在查询时读取
+- 字段级 `extra_params` JSON 中的 `"jieba_dict_dir"` —— 按索引生效
 
 ### Schema 定义
 

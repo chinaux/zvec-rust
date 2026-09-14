@@ -58,7 +58,7 @@ Rust SDK 依赖 zvec C 库（`libzvec_c_api`）。可通过以下任一方式提
 
 ```toml
 [dependencies]
-zvec-rust = "0.7.0"
+zvec-rust = "0.7.1"
 ```
 
 ### 方案二：自行编译

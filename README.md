@@ -58,7 +58,7 @@ Add `zvec-rust` to your `Cargo.toml`. The default `bundled` feature automaticall
 
 ```toml
 [dependencies]
-zvec-rust = "0.7.0"
+zvec-rust = "0.7.1"
 ```
 
 ### Option 2: Custom Build

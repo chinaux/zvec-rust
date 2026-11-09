@@ -678,12 +678,23 @@ impl SearchQueryBuilder {
 }
 
 /// A grouped vector similarity search query.
+///
+/// Execute it with
+/// [`Collection::group_by_query`](crate::collection::Collection::group_by_query),
+/// which returns the matches bucketed into
+/// [`GroupResult`](crate::collection::GroupResult)s instead of one flat list.
 pub struct GroupBySearchQuery {
     pub(crate) handle: *mut zvec_rust_sys::zvec_group_by_vector_query_t,
 }
 
 impl GroupBySearchQuery {
     /// Creates a new group-by search query.
+    ///
+    /// - `field_name`: vector field to search
+    /// - `group_by_field`: scalar field to group on; it must exist in the schema
+    /// - `vector`: query vector, matching the field's dimension
+    /// - `group_count`: maximum number of groups to return
+    /// - `group_topk`: maximum number of documents per group
     pub fn new(
         field_name: &str,
         group_by_field: &str,

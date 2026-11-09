@@ -3,6 +3,109 @@ use std::ffi::CStr;
 use crate::error::{check_error, to_cstring, Error, ErrorCode, Result};
 use crate::types::{DataType, IndexType, MetricType, QuantizeType};
 
+/// Product-quantization (PQ) configuration for an IVF vector index.
+///
+/// [`Default`] mirrors `ZVEC_PQ_QUANTIZER_PARAMS_DEFAULT`: eight chunks of eight
+/// bits, no rotation and no FastScan.
+///
+/// The engine re-validates the combination against the field when the schema is
+/// built, and rejects the collection with [`ErrorCode::InvalidArgument`] when:
+///
+/// - the field is not `VectorFp32`, or the metric is not L2, IP or Cosine;
+/// - `num_bits` is neither `4` nor `8`;
+/// - `num_chunk` is not positive, exceeds the dimension, or — with `num_bits`
+///   `4` — does not divide it exactly;
+/// - `fast_scan` is set without `num_bits` `4` (FastScan is PQ4-only);
+/// - `enable_rotate` is set while `opq_iter` or `opq_pq_iter` is zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PqQuantizerParams {
+    /// Number of sub-vector chunks each vector is split into.
+    pub num_chunk: i32,
+    /// Bits per chunk code word: `4` (PQ4) or `8` (PQ8).
+    pub num_bits: i32,
+    /// Learn a rotation matrix (OPQ) instead of quantizing raw vectors.
+    pub enable_rotate: bool,
+    /// Pack code words for SIMD scanning; requires `num_bits == 4`.
+    pub fast_scan: bool,
+    /// Outer OPQ training iterations.
+    pub opq_iter: u32,
+    /// Inner PQ training iterations per OPQ pass.
+    pub opq_pq_iter: u32,
+}
+
+impl Default for PqQuantizerParams {
+    fn default() -> Self {
+        let raw = zvec_rust_sys::ZVEC_PQ_QUANTIZER_PARAMS_DEFAULT;
+        PqQuantizerParams {
+            num_chunk: raw.num_chunk,
+            num_bits: raw.num_bits,
+            enable_rotate: raw.enable_rotate,
+            fast_scan: raw.fast_scan,
+            opq_iter: raw.opq_iter,
+            opq_pq_iter: raw.opq_pq_iter,
+        }
+    }
+}
+
+impl PqQuantizerParams {
+    /// PQ4: four bits per chunk code word, the compact end of the accuracy /
+    /// memory trade-off. `dimension % num_chunk` must be zero.
+    pub fn pq4(num_chunk: i32) -> Self {
+        PqQuantizerParams {
+            num_chunk,
+            num_bits: 4,
+            ..Default::default()
+        }
+    }
+
+    /// PQ8: eight bits per chunk code word, the accurate end of the accuracy /
+    /// memory trade-off.
+    pub fn pq8(num_chunk: i32) -> Self {
+        PqQuantizerParams {
+            num_chunk,
+            num_bits: 8,
+            ..Default::default()
+        }
+    }
+
+    /// Learns a rotation before quantizing (OPQ), which usually lowers the
+    /// quantization error at the cost of a longer build.
+    pub fn with_rotation(mut self, opq_iter: u32, opq_pq_iter: u32) -> Self {
+        self.enable_rotate = true;
+        self.opq_iter = opq_iter;
+        self.opq_pq_iter = opq_pq_iter;
+        self
+    }
+
+    /// Enables or disables FastScan, the SIMD-friendly PQ4 code layout.
+    pub fn with_fast_scan(mut self, fast_scan: bool) -> Self {
+        self.fast_scan = fast_scan;
+        self
+    }
+
+    fn to_raw(self) -> zvec_rust_sys::zvec_pq_quantizer_params_t {
+        zvec_rust_sys::zvec_pq_quantizer_params_t {
+            num_chunk: self.num_chunk,
+            num_bits: self.num_bits,
+            enable_rotate: self.enable_rotate,
+            fast_scan: self.fast_scan,
+            opq_iter: self.opq_iter,
+            opq_pq_iter: self.opq_pq_iter,
+        }
+    }
+
+    fn from_raw(raw: &zvec_rust_sys::zvec_pq_quantizer_params_t) -> Self {
+        PqQuantizerParams {
+            num_chunk: raw.num_chunk,
+            num_bits: raw.num_bits,
+            enable_rotate: raw.enable_rotate,
+            fast_scan: raw.fast_scan,
+            opq_iter: raw.opq_iter,
+            opq_pq_iter: raw.opq_pq_iter,
+        }
+    }
+}
+
 /// Parameters for configuring an index on a field.
 pub struct IndexParams {
     pub(crate) handle: *mut zvec_rust_sys::zvec_index_params_t,
@@ -140,6 +243,29 @@ impl IndexParams {
                 owned: true,
             })
         }
+    }
+
+    /// Creates IVF index parameters with product quantization.
+    ///
+    /// IVF PQ keeps inverted-file clustering but stores each residual as a
+    /// product-quantized code, which cuts the memory footprint well below IVF
+    /// RaBitQ's when the dimension is large. Equivalent to
+    /// [`IndexParams::ivf`] followed by [`IndexParams::set_quantizer_pq`].
+    ///
+    /// - `n_list`: number of cluster centers
+    /// - `n_iters`: k-means iterations used to train the centers
+    /// - `use_soar`: build the redundant SOAR assignments that improve recall
+    /// - `pq`: chunk layout, bit width, rotation and FastScan settings
+    pub fn ivf_pq(
+        metric: MetricType,
+        n_list: i32,
+        n_iters: i32,
+        use_soar: bool,
+        pq: PqQuantizerParams,
+    ) -> Result<Self> {
+        let mut params = IndexParams::ivf(metric, n_list, n_iters, use_soar)?;
+        params.set_quantizer_pq(pq)?;
+        Ok(params)
     }
 
     /// Creates Flat index parameters.
@@ -323,6 +449,38 @@ impl IndexParams {
         check_error(unsafe {
             zvec_rust_sys::zvec_index_params_set_quantizer_enable_rotate(self.handle, enable_rotate)
         })
+    }
+
+    /// Sets the IVF product-quantization configuration.
+    ///
+    /// The quantize type is switched to [`QuantizeType::Pq`] as part of the
+    /// call: PQ settings stored on an index that does not quantize with PQ
+    /// would be ignored silently.
+    ///
+    /// Only IVF index params accept this option — [`IndexParams::ivf_pq`] is
+    /// the shorthand — so HNSW, Flat, DiskANN, Vamana, IVF RaBitQ and the
+    /// scalar indexes (`invert`, `fts`) return [`ErrorCode::InvalidArgument`].
+    /// HNSW can still quantize with PQ, but only with the engine defaults:
+    /// use [`IndexParams::hnsw_with_quantize`] with [`QuantizeType::Pq`].
+    pub fn set_quantizer_pq(&mut self, pq: PqQuantizerParams) -> Result<()> {
+        let raw = pq.to_raw();
+        check_error(unsafe {
+            zvec_rust_sys::zvec_index_params_set_quantizer_pq(self.handle, &raw)
+        })?;
+        self.set_quantize_type(QuantizeType::Pq)
+    }
+
+    /// Returns the product-quantization configuration of IVF index params.
+    ///
+    /// Non-IVF params return [`ErrorCode::InvalidArgument`]; the value is
+    /// meaningful once [`IndexParams::set_quantizer_pq`] has selected
+    /// [`QuantizeType::Pq`].
+    pub fn quantizer_pq(&self) -> Result<PqQuantizerParams> {
+        let mut raw = zvec_rust_sys::ZVEC_PQ_QUANTIZER_PARAMS_DEFAULT;
+        check_error(unsafe {
+            zvec_rust_sys::zvec_index_params_get_quantizer_pq(self.handle, &mut raw)
+        })?;
+        Ok(PqQuantizerParams::from_raw(&raw))
     }
 }
 
@@ -865,6 +1023,103 @@ mod tests {
             .set_quantizer_enable_rotate(true)
             .expect_err("scalar index params must reject the quantizer option");
         assert_eq!(err.code, ErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn test_pq_quantizer_params_default_matches_c_macro() {
+        assert_eq!(
+            PqQuantizerParams::default(),
+            PqQuantizerParams {
+                num_chunk: 8,
+                num_bits: 8,
+                enable_rotate: false,
+                fast_scan: false,
+                opq_iter: 5,
+                opq_pq_iter: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pq_quantizer_params_builders() {
+        assert_eq!(PqQuantizerParams::pq8(16).num_bits, 8);
+        assert_eq!(PqQuantizerParams::pq8(16).num_chunk, 16);
+        assert_eq!(PqQuantizerParams::pq4(16).num_bits, 4);
+        assert!(!PqQuantizerParams::pq4(16).fast_scan);
+
+        let rotated = PqQuantizerParams::pq4(8).with_rotation(3, 2);
+        assert!(rotated.enable_rotate);
+        assert_eq!(rotated.opq_iter, 3);
+        assert_eq!(rotated.opq_pq_iter, 2);
+
+        assert!(PqQuantizerParams::pq4(8).with_fast_scan(true).fast_scan);
+        assert!(
+            !PqQuantizerParams::pq4(8)
+                .with_fast_scan(true)
+                .with_fast_scan(false)
+                .fast_scan
+        );
+    }
+
+    #[test]
+    fn test_index_params_ivf_pq_roundtrip() {
+        let pq = PqQuantizerParams::pq4(16)
+            .with_rotation(7, 3)
+            .with_fast_scan(true);
+        let params = IndexParams::ivf_pq(MetricType::L2, 64, 10, false, pq).unwrap();
+
+        assert_eq!(params.index_type(), IndexType::Ivf);
+        assert_eq!(params.metric_type(), MetricType::L2);
+        assert_eq!(params.quantize_type(), QuantizeType::Pq);
+        assert_eq!(params.quantizer_pq().unwrap(), pq);
+        assert!(params.quantizer_enable_rotate());
+    }
+
+    #[test]
+    fn test_index_params_set_quantizer_pq_selects_pq() {
+        let mut params = IndexParams::ivf(MetricType::Cosine, 32, 10, true).unwrap();
+        assert_eq!(params.quantize_type(), QuantizeType::Undefined);
+
+        params.set_quantizer_pq(PqQuantizerParams::pq8(8)).unwrap();
+        assert_eq!(params.quantize_type(), QuantizeType::Pq);
+        assert_eq!(params.quantizer_pq().unwrap(), PqQuantizerParams::pq8(8));
+
+        // The engine copies the struct, so a later local change cannot leak in.
+        let mut rejected = PqQuantizerParams::pq8(8);
+        rejected.num_bits = 5;
+        let err = params
+            .set_quantizer_pq(rejected)
+            .expect_err("five bits per chunk is not a PQ code width");
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+        assert_eq!(params.quantizer_pq().unwrap(), PqQuantizerParams::pq8(8));
+        assert_eq!(params.quantize_type(), QuantizeType::Pq);
+    }
+
+    #[test]
+    fn test_index_params_set_quantizer_pq_rejects_non_ivf_params() {
+        for mut params in [
+            IndexParams::hnsw(MetricType::L2, 16, 200).unwrap(),
+            IndexParams::ivf_rabitq(MetricType::L2, 16, 7, 0).unwrap(),
+            IndexParams::flat(MetricType::L2).unwrap(),
+            IndexParams::invert(false, false).unwrap(),
+        ] {
+            let err = params
+                .set_quantizer_pq(PqQuantizerParams::default())
+                .expect_err("only IVF index params accept PQ configuration");
+            assert_eq!(err.code, ErrorCode::InvalidArgument);
+            assert_eq!(
+                params.quantizer_pq().unwrap_err().code,
+                ErrorCode::InvalidArgument
+            );
+        }
+    }
+
+    #[test]
+    fn test_index_params_hnsw_pq_uses_engine_defaults() {
+        let params =
+            IndexParams::hnsw_with_quantize(MetricType::L2, 16, 200, QuantizeType::Pq).unwrap();
+        assert_eq!(params.index_type(), IndexType::Hnsw);
+        assert_eq!(params.quantize_type(), QuantizeType::Pq);
     }
 
     #[test]

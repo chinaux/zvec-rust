@@ -148,6 +148,41 @@ fn main() -> zvec_rust::Result<()> {
 
     println!("Schema created with FP32, FP16, and INT8 vector types");
 
+    // Example 9: Schema with an IVF PQ index
+    println!("\n=== Example 9: IVF PQ Index ===");
+    let _pq_schema = CollectionSchema::builder("pq_collection")
+        .add_field(FieldSchema::new("id", DataType::String, false, 0)?)
+        .add_vector_field(
+            "embedding",
+            DataType::VectorFp32,
+            128,
+            // PQ4: four bits per chunk, and 128 % 8 == 0 as PQ4 requires.
+            IndexParams::ivf_pq(MetricType::L2, 100, 10, false, PqQuantizerParams::pq4(8))?,
+        )
+        .build()?;
+
+    println!("IVF PQ index created with nlist=100, 8 chunks of 4 bits");
+
+    let _opq_schema = CollectionSchema::builder("opq_collection")
+        .add_field(FieldSchema::new("id", DataType::String, false, 0)?)
+        .add_vector_field(
+            "embedding",
+            DataType::VectorFp32,
+            128,
+            // PQ8 with a learned rotation (OPQ) and the SIMD-friendly FastScan
+            // layout left off, because FastScan is PQ4-only.
+            IndexParams::ivf_pq(
+                MetricType::Cosine,
+                100,
+                10,
+                false,
+                PqQuantizerParams::pq8(16).with_rotation(5, 4),
+            )?,
+        )
+        .build()?;
+
+    println!("IVF OPQ index created with 16 chunks of 8 bits and a learned rotation");
+
     // Clean up
     shutdown()?;
 

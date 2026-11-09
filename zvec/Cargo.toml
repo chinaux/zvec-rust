@@ -39,6 +39,10 @@ name = "vector_search"
 path = "examples/vector_search.rs"
 
 [[example]]
+name = "group_by_search"
+path = "examples/group_by_search.rs"
+
+[[example]]
 name = "crud_operations"
 path = "examples/crud_operations.rs"
 

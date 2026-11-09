@@ -1,11 +1,12 @@
 use std::ffi::CStr;
+use std::fmt;
 use std::marker::PhantomData;
 use std::ptr;
 
 use crate::doc::Doc;
 use crate::error::{check_error, to_cstring, Error, ErrorCode, Result};
 use crate::multi_query::MultiQuery;
-use crate::query::SearchQuery;
+use crate::query::{GroupBySearchQuery, SearchQuery};
 use crate::schema::{CollectionSchema, FieldSchema, IndexParams};
 
 /// Options for creating or opening a collection.
@@ -106,6 +107,34 @@ pub struct WriteResult {
     pub success_count: u64,
     pub error_count: u64,
     pub results: Vec<DocWriteResult>,
+}
+
+/// One group of a grouped vector search.
+///
+/// Documents are ordered by vector similarity inside the group and are owned by
+/// the `GroupResult`, so they stay readable after the query and the collection
+/// are dropped.
+pub struct GroupResult {
+    /// String representation of the value the group was formed on.
+    pub group_by_value: String,
+    /// Documents in the group, closest match first.
+    pub docs: Vec<Doc>,
+}
+
+impl GroupResult {
+    /// Returns the number of documents in this group.
+    pub fn doc_count(&self) -> usize {
+        self.docs.len()
+    }
+}
+
+impl fmt::Debug for GroupResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupResult")
+            .field("group_by_value", &self.group_by_value)
+            .field("doc_count", &self.docs.len())
+            .finish()
+    }
 }
 
 /// A zvec collection for storing and querying vector data.
@@ -333,6 +362,33 @@ impl Collection {
 
         let docs = unsafe { collect_docs(results, result_count) };
         Ok(docs)
+    }
+
+    /// Performs a vector similarity search grouped by a scalar field.
+    ///
+    /// Instead of one flat list, the closest matches are bucketed by the value
+    /// of the group-by field: at most `group_count` groups come back, each with
+    /// at most `topk_per_group` documents ordered by similarity. Use it to
+    /// spread results over categories, for example a few documents per author
+    /// rather than a page full of one author.
+    ///
+    /// An empty vector means no group matched; a group-by field that is not in
+    /// the schema returns [`ErrorCode::InvalidArgument`].
+    pub fn group_by_query(&self, query: &GroupBySearchQuery) -> Result<Vec<GroupResult>> {
+        let mut results: *mut zvec_rust_sys::zvec_group_result_t = ptr::null_mut();
+        let mut result_count: usize = 0;
+
+        check_error(unsafe {
+            zvec_rust_sys::zvec_collection_group_by_query(
+                self.handle,
+                query.handle,
+                &mut results,
+                &mut result_count,
+            )
+        })?;
+
+        let groups = unsafe { collect_group_results(results, result_count) };
+        Ok(groups)
     }
 
     /// Performs a multi-query that combines several sub-queries with a rerank
@@ -806,6 +862,64 @@ unsafe fn collect_docs(results: *mut *mut zvec_rust_sys::zvec_doc_t, count: usiz
     docs
 }
 
+/// Converts a C group-result array into owned [`GroupResult`]s.
+///
+/// The array owns every member — the grouping values, the per-group document
+/// pointer arrays and the documents themselves — and the C API only offers
+/// `zvec_group_results_free` to release it as a whole. Ownership of the
+/// documents is moved into the returned `Doc`s, so each group's document array
+/// is cleared first and the remaining shell is handed back to the engine;
+/// `zvec_docs_free` ignores a null array.
+///
+/// # Safety
+/// `results` must be null or point to a valid array of `count` group results
+/// allocated by the zvec C library.
+unsafe fn collect_group_results(
+    results: *mut zvec_rust_sys::zvec_group_result_t,
+    count: usize,
+) -> Vec<GroupResult> {
+    if results.is_null() || count == 0 {
+        return Vec::new();
+    }
+
+    let mut groups = Vec::with_capacity(count);
+    for i in 0..count {
+        let group = &mut *results.add(i);
+        let group_by_value = if group.group_by_value.is_null() {
+            String::new()
+        } else {
+            CStr::from_ptr(group.group_by_value)
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        // An empty group carries a null document array.
+        let mut docs = Vec::new();
+        if !group.docs.is_null() {
+            docs.reserve(group.doc_count);
+            for j in 0..group.doc_count {
+                let doc_ptr = *group.docs.add(j);
+                if !doc_ptr.is_null() {
+                    // Take ownership: Rust will call zvec_doc_destroy on drop.
+                    docs.push(Doc::from_raw(doc_ptr));
+                }
+            }
+        }
+
+        group.docs = ptr::null_mut();
+        group.doc_count = 0;
+
+        groups.push(GroupResult {
+            group_by_value,
+            docs,
+        });
+    }
+
+    zvec_rust_sys::zvec_group_results_free(results, count);
+
+    groups
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -822,5 +936,35 @@ mod tests {
         let mut fake: *mut zvec_rust_sys::zvec_doc_t = ptr::null_mut();
         let docs = unsafe { collect_docs(&mut fake as *mut _, 0) };
         assert!(docs.is_empty());
+    }
+
+    #[test]
+    fn collect_group_results_handles_null_pointer() {
+        let groups = unsafe { collect_group_results(ptr::null_mut(), 0) };
+        assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn collect_group_results_handles_zero_count() {
+        let mut fake = zvec_rust_sys::zvec_group_result_t {
+            group_by_value: ptr::null_mut(),
+            docs: ptr::null_mut(),
+            doc_count: 0,
+        };
+        let groups = unsafe { collect_group_results(&mut fake as *mut _, 0) };
+        assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn group_result_reports_doc_count() {
+        let group = GroupResult {
+            group_by_value: "science".into(),
+            docs: Vec::new(),
+        };
+        assert_eq!(group.doc_count(), 0);
+        assert_eq!(
+            format!("{:?}", group),
+            "GroupResult { group_by_value: \"science\", doc_count: 0 }"
+        );
     }
 }

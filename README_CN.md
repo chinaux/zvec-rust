@@ -221,6 +221,7 @@ fn main() -> zvec_rust::Result<()> {
 | `basic` | 端到端流程：schema → 插入 → 查询 → 获取 → 删除 |
 | `schema_builder` | 各种 Schema 配置：字段类型、索引类型、量化 |
 | `vector_search` | 向量查询模式：简单查询、Builder、过滤器、输出字段、HNSW 参数 |
+| `group_by_search` | 分组向量检索：按标量字段对最近邻结果分桶 |
 | `crud_operations` | 完整 CRUD：插入、获取、更新、upsert、删除、统计、刷新 |
 | `config_logging` | 库配置：内存限制、线程数、日志 |
 
@@ -373,6 +374,29 @@ Builder 会根据已设置的字段推断查询类型：设置 `vector(..)` 构�
 两者都不设置则构建标量查询。纯关键词查询也可以直接用
 `SearchQuery::fts(field, fts, topk)` 构造。
 
+### 分组检索
+
+`GroupBySearchQuery` 会按标量字段对最近邻结果分桶，而不是返回一个扁平列表，
+从而避免单一热门取值占满整页结果：
+
+```rust
+// 最多 3 个分组，每组最多 2 条文档
+let mut query = GroupBySearchQuery::new("embedding", "category", &query_vec, 3, 2)?;
+query.set_output_fields(&["id", "title"])?;
+query.set_filter("price < 100")?;
+
+let groups = collection.group_by_query(&query)?;
+for group in &groups {
+    println!("{}: {} 条文档", group.group_by_value, group.doc_count());
+    for doc in &group.docs {
+        println!("  {} score {:.4}", doc.get_pk().unwrap_or(""), doc.get_score());
+    }
+}
+```
+
+每个 `GroupResult` 都持有自己的文档，因此查询对象与集合释放之后结果依然可读。
+返回空数组表示没有任何分组命中。
+
 ### 多路检索（混合搜索）
 
 `MultiQuery` 可以组合多个子查询（稠密向量、稀疏向量或全文检索），并使用 RRF 或加权策略重排：
@@ -423,6 +447,7 @@ mq.set_rerank_weighted(&[0.7, 0.3])?;  // 每个子查询的权重
 | HNSW+量化 | `IndexParams::hnsw_with_quantize(...)` | 带量化的 HNSW |
 | IVF | `IndexParams::ivf(metric, nlist, niters, soar)` | 倒排文件索引 |
 | IVF RaBitQ | `IndexParams::ivf_rabitq(metric, nlist, total_bits, sample_count)` | 带 RaBitQ 量化的 IVF 索引 |
+| IVF PQ | `IndexParams::ivf_pq(metric, nlist, niters, soar, pq)` | 带乘积量化的 IVF 索引（PQ4/PQ8，可选 OPQ） |
 | Flat | `IndexParams::flat(metric)` | 暴力搜索索引 |
 | DiskANN | `IndexParams::diskann(metric, max_degree, list_size, pq_chunk_num)` | 基于磁盘的图索引，适合大规模数据集（Linux x86_64/ARM64、macOS ARM64、Windows x86_64、64 位 Android/iOS） |
 | Invert | `IndexParams::invert(range, wildcard)` | 标量字段索引 |
@@ -430,6 +455,27 @@ mq.set_rerank_weighted(&[0.7, 0.3])?;  // 每个子查询的权重
 
 使用 `Int8` / `Int4` 量化时，`params.set_quantizer_enable_rotate(true)` 会在量化前对向量做随机旋转，
 以降低量化误差。旋转矩阵随索引一起保存，并在检索时自动作用于查询向量。
+
+乘积量化（PQ）把每条向量压缩成 `num_chunk` 个码字，要求字段为 FP32，
+且度量为 `L2`、`Ip` 或 `Cosine`：
+
+```rust
+// PQ4：每个码字 4 bit；维度必须能被 num_chunk 整除
+let params = IndexParams::ivf_pq(MetricType::L2, 100, 10, false, PqQuantizerParams::pq4(8))?;
+
+// PQ8 + 学习旋转矩阵（OPQ）；FastScan 仅支持 PQ4，因此这里保持关闭
+let params = IndexParams::ivf_pq(
+    MetricType::Cosine,
+    100,
+    10,
+    false,
+    PqQuantizerParams::pq8(16).with_rotation(5, 4),
+)?;
+```
+
+`params.set_quantizer_pq(pq)` 可以把同样的配置应用到已有的 IVF 参数上，并自动将量化类型
+设为 `QuantizeType::Pq`；`params.quantizer_pq()` 用于读回配置。HNSW 同样支持 PQ 量化，
+但只能使用引擎默认参数：`IndexParams::hnsw_with_quantize(metric, m, ef, QuantizeType::Pq)`。
 
 ## 测试
 

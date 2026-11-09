@@ -46,8 +46,8 @@ pub mod schema;
 pub mod types;
 
 pub use collection::{
-    Collection, CollectionOptions, CollectionStats, DocIterator, DocWriteResult, IndexStat,
-    WriteResult,
+    Collection, CollectionOptions, CollectionStats, DocIterator, DocWriteResult, GroupResult,
+    IndexStat, WriteResult,
 };
 pub use config::{
     initialize, io_backend_description, io_backend_type, io_backend_type_name, is_initialized,
@@ -60,7 +60,7 @@ pub use query::{
     DiskannQueryParams, FlatQueryParams, Fts, FtsQueryParams, GroupBySearchQuery, HnswQueryParams,
     IvfQueryParams, IvfRabitqQueryParams, SearchQuery, SearchQueryBuilder,
 };
-pub use schema::{CollectionSchema, FieldSchema, IndexParams};
+pub use schema::{CollectionSchema, FieldSchema, IndexParams, PqQuantizerParams};
 pub use types::{DataType, DocOperator, IndexType, LogLevel, MetricType, QuantizeType};
 
 /// Re-export the raw FFI bindings for advanced users.

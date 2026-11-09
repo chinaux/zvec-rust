@@ -3,6 +3,7 @@
        bench coverage coverage-html coverage-lcov coverage-text \
        fuzz fuzz-types fuzz-schema fuzz-doc fuzz-query fuzz-collection \
        example example-basic example-schema example-search example-crud example-config \
+       example-group-by \
        lint setup help \
        submodule-init submodule-update zvec-build zvec-clean zvec-rebuild
 
@@ -151,6 +152,9 @@ example-schema:  ## Run schema_builder example
 
 example-search:  ## Run vector_search example
 	$(CARGO) run --example vector_search
+
+example-group-by:  ## Run group_by_search example
+	$(CARGO) run --example group_by_search
 
 example-crud:  ## Run crud_operations example
 	$(CARGO) run --example crud_operations

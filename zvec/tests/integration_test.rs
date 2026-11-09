@@ -1607,8 +1607,9 @@ fn test_ivf_rabitq_collection_end_to_end() {
 
     let collection = match Collection::create_and_open(dir.to_str().unwrap(), &schema, None) {
         Ok(c) => c,
-        // RaBitQ is only supported on Linux x86_64. On other platforms the
-        // engine reports NotSupported; skip the end-to-end flow gracefully.
+        // Older zvec releases only built RaBitQ on Linux x86_64. Since v0.8.1
+        // it also covers macOS, Android and iOS ARM64 plus Intel Mac, but a
+        // platform without it still reports NotSupported; skip gracefully.
         Err(e) if e.code == ErrorCode::NotSupported => {
             eprintln!("skipping ivf rabitq end-to-end test: {}", e.message);
             return;
@@ -1644,4 +1645,345 @@ fn test_ivf_rabitq_collection_end_to_end() {
     let results = collection.query(&query).expect("ivf rabitq query failed");
     assert!(!results.is_empty());
     assert!(results.len() <= 5);
+}
+
+// =============================================================================
+// IVF PQ Index Tests
+// =============================================================================
+
+#[test]
+fn test_index_params_ivf_pq() {
+    ensure_initialized();
+
+    let pq = PqQuantizerParams::pq8(4).with_rotation(5, 4);
+    let params = IndexParams::ivf_pq(MetricType::L2, 16, 10, false, pq).unwrap();
+
+    assert_eq!(params.index_type(), IndexType::Ivf);
+    assert_eq!(params.metric_type(), MetricType::L2);
+    assert_eq!(params.quantize_type(), QuantizeType::Pq);
+    assert_eq!(params.quantizer_pq().unwrap(), pq);
+}
+
+/// Opens a collection whose vector field is an IVF PQ index, so schema
+/// validation runs against a real engine.
+fn open_ivf_pq_collection(
+    dir: &std::path::Path,
+    name: &str,
+    metric: MetricType,
+    dimension: u32,
+    pq: PqQuantizerParams,
+) -> Result<Collection> {
+    let schema = CollectionSchema::builder(name)
+        .add_field(FieldSchema::new("id", DataType::String, false, 0).unwrap())
+        .add_vector_field(
+            "embedding",
+            DataType::VectorFp32,
+            dimension,
+            IndexParams::ivf_pq(metric, 2, 10, false, pq).unwrap(),
+        )
+        .build()
+        .expect("failed to build ivf pq schema");
+
+    Collection::create_and_open(dir.to_str().unwrap(), &schema, None)
+}
+
+#[test]
+fn test_ivf_pq_collection_end_to_end() {
+    ensure_initialized();
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let dir = tmp_dir.path().join("zvec_ivf_pq_data");
+
+    let dimension: u32 = 16;
+    let collection = open_ivf_pq_collection(
+        &dir,
+        "ivf_pq_collection",
+        MetricType::L2,
+        dimension,
+        PqQuantizerParams::pq4(4),
+    )
+    .expect("failed to create collection with an ivf pq index");
+
+    let doc_count = 200usize;
+    let mut docs = Vec::with_capacity(doc_count);
+    for i in 0..doc_count {
+        let mut doc = Doc::new().unwrap();
+        let pk = format!("pk_{}", i);
+        doc.set_pk(&pk);
+        doc.add_string("id", &pk).unwrap();
+        let vector: Vec<f32> = (0..dimension)
+            .map(|d| ((i * 7 + d as usize * 13) % 101) as f32 * 0.5 + 0.25)
+            .collect();
+        doc.add_vector_f32("embedding", &vector).unwrap();
+        docs.push(doc);
+    }
+    let doc_refs: Vec<&Doc> = docs.iter().collect();
+    let result = collection.insert(&doc_refs).unwrap();
+    assert_eq!(result.success_count, doc_count as u64);
+    assert_eq!(result.error_count, 0);
+
+    collection.flush().expect("flush failed");
+
+    // PQ trains on flush, so the index must answer a search afterwards.
+    let query_vec: Vec<f32> = (0..dimension).map(|d| (d % 5) as f32 + 0.5).collect();
+    let mut query = SearchQuery::new("embedding", &query_vec, 5).unwrap();
+    query
+        .set_ivf_params(IvfQueryParams::new(2, false, 0.0))
+        .expect("set ivf params failed");
+    let results = collection.query(&query).expect("ivf pq query failed");
+    assert!(!results.is_empty());
+    assert!(results.len() <= 5);
+
+    let inserted: Vec<String> = (0..doc_count).map(|i| format!("pk_{}", i)).collect();
+    let mut seen = Vec::new();
+    for doc in &results {
+        let pk = doc
+            .get_pk()
+            .expect("every result carries its pk")
+            .to_string();
+        assert!(inserted.contains(&pk), "unexpected pk {:?}", pk);
+        assert!(!seen.contains(&pk), "duplicate pk {:?}", pk);
+        seen.push(pk);
+    }
+}
+
+#[test]
+fn test_ivf_pq_schema_rejects_chunks_that_do_not_divide_the_dimension() {
+    ensure_initialized();
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let err = match open_ivf_pq_collection(
+        &tmp_dir.path().join("zvec_ivf_pq_indivisible"),
+        "ivf_pq_indivisible",
+        MetricType::L2,
+        6,
+        PqQuantizerParams::pq4(4),
+    ) {
+        Ok(_) => panic!("PQ4 requires the dimension to be divisible by num_chunk"),
+        Err(err) => err,
+    };
+    assert_eq!(err.code, ErrorCode::InvalidArgument);
+}
+
+#[test]
+fn test_ivf_pq_schema_rejects_unsupported_metric() {
+    ensure_initialized();
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let err = match open_ivf_pq_collection(
+        &tmp_dir.path().join("zvec_ivf_pq_metric"),
+        "ivf_pq_metric",
+        MetricType::MipsL2,
+        16,
+        PqQuantizerParams::pq8(4),
+    ) {
+        Ok(_) => panic!("PQ supports L2, IP and Cosine metrics only"),
+        Err(err) => err,
+    };
+    assert_eq!(err.code, ErrorCode::InvalidArgument);
+}
+
+// =============================================================================
+// Grouped Vector Search Tests
+// =============================================================================
+
+/// Creates a collection with `doc_count` documents spread over three groups
+/// (`group_id = id / 3`) on a FLAT index, so distances are exact: the query
+/// vector is the origin and document `id` sits at L2 distance `id * id`.
+fn create_group_by_collection(parent_dir: &std::path::Path, doc_count: i64) -> Collection {
+    let schema = CollectionSchema::builder("group_by_collection")
+        .add_field(FieldSchema::new("id", DataType::Int64, false, 0).unwrap())
+        .add_field(FieldSchema::new("group_id", DataType::Int64, false, 0).unwrap())
+        .add_vector_field(
+            "embedding",
+            DataType::VectorFp32,
+            4,
+            IndexParams::flat(MetricType::L2).unwrap(),
+        )
+        .build()
+        .expect("failed to build group-by schema");
+
+    let collection = Collection::create_and_open(parent_dir.to_str().unwrap(), &schema, None)
+        .expect("failed to create group-by collection");
+
+    let mut docs = Vec::new();
+    for id in 0..doc_count {
+        let mut doc = Doc::new().unwrap();
+        doc.set_pk(&format!("doc_{}", id));
+        doc.add_i64("id", id).unwrap();
+        doc.add_i64("group_id", id / 3).unwrap();
+        doc.add_vector_f32("embedding", &[id as f32, 0.0, 0.0, 0.0])
+            .unwrap();
+        docs.push(doc);
+    }
+    if !docs.is_empty() {
+        let doc_refs: Vec<&Doc> = docs.iter().collect();
+        let result = collection.insert(&doc_refs).expect("insert failed");
+        assert_eq!(result.success_count, doc_count as u64);
+        assert_eq!(result.error_count, 0);
+        collection.flush().expect("flush failed");
+    }
+
+    collection
+}
+
+/// A grouped query over the origin, returning only the `id` output field.
+fn new_group_by_query(group_count: u32, group_topk: u32) -> GroupBySearchQuery {
+    let mut query = GroupBySearchQuery::new(
+        "embedding",
+        "group_id",
+        &[0.0, 0.0, 0.0, 0.0],
+        group_count,
+        group_topk,
+    )
+    .expect("failed to create group-by query");
+    query
+        .set_output_fields(&["id"])
+        .expect("set output fields failed");
+    query
+        .set_flat_params(FlatQueryParams::new(false, 10.0))
+        .expect("set flat params failed");
+    query
+}
+
+#[test]
+fn test_group_by_query_on_empty_collection_returns_no_groups() {
+    ensure_initialized();
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let collection = create_group_by_collection(&tmp_dir.path().join("zvec_group_by_empty"), 0);
+
+    let query = new_group_by_query(2, 3);
+    assert!(collection.group_by_query(&query).unwrap().is_empty());
+}
+
+#[test]
+fn test_group_by_query_buckets_results() {
+    ensure_initialized();
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let collection = create_group_by_collection(&tmp_dir.path().join("zvec_group_by_data"), 9);
+
+    let query = new_group_by_query(2, 2);
+    let groups = collection.group_by_query(&query).unwrap();
+
+    // The two nearest groups first, each with its two nearest documents.
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0].group_by_value, "0");
+    assert_eq!(groups[1].group_by_value, "1");
+
+    for (group_index, group) in groups.iter().enumerate() {
+        assert_eq!(group.doc_count(), 2);
+        assert_eq!(group.docs.len(), 2);
+        for (position, doc) in group.docs.iter().enumerate() {
+            let id = group_index as i64 * 3 + position as i64;
+            assert_eq!(doc.get_pk(), Some(format!("doc_{}", id).as_str()));
+            assert_eq!(doc.get_i64("id").unwrap(), Some(id));
+            assert!(
+                (doc.get_score() - (id * id) as f32).abs() < 1e-3,
+                "unexpected score {} for id {}",
+                doc.get_score(),
+                id
+            );
+            // Only the requested output field comes back.
+            assert!(!doc.has_field("embedding"));
+            assert!(!doc.has_field("group_id"));
+        }
+    }
+}
+
+#[test]
+fn test_group_by_query_honours_filter_and_include_vector() {
+    ensure_initialized();
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let collection = create_group_by_collection(&tmp_dir.path().join("zvec_group_by_filter"), 9);
+
+    let mut query = new_group_by_query(3, 1);
+    query.set_filter("id >= 3").expect("set filter failed");
+    query
+        .set_include_vector(true)
+        .expect("set include vector failed");
+
+    let groups = collection.group_by_query(&query).unwrap();
+
+    // Group 0 only holds ids 0..2, so the filter drops it.
+    assert_eq!(groups.len(), 2);
+    for group in &groups {
+        assert_eq!(group.doc_count(), 1);
+        let group_id: i64 = group
+            .group_by_value
+            .parse()
+            .expect("group value is the stringified group_id");
+        assert!(group_id >= 1);
+
+        let doc = &group.docs[0];
+        let id = group_id * 3;
+        assert_eq!(doc.get_pk(), Some(format!("doc_{}", id).as_str()));
+        assert_eq!(doc.get_i64("id").unwrap(), Some(id));
+        assert_eq!(
+            doc.get_vector_f32("embedding").unwrap(),
+            Some(vec![id as f32, 0.0, 0.0, 0.0])
+        );
+    }
+}
+
+#[test]
+fn test_group_by_query_without_matches_returns_no_groups() {
+    ensure_initialized();
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let collection = create_group_by_collection(&tmp_dir.path().join("zvec_group_by_none"), 9);
+
+    let mut query = new_group_by_query(3, 1);
+    query.set_filter("id < 0").expect("set filter failed");
+
+    assert!(collection.group_by_query(&query).unwrap().is_empty());
+}
+
+#[test]
+fn test_group_by_query_rejects_invalid_arguments() {
+    ensure_initialized();
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let collection = create_group_by_collection(&tmp_dir.path().join("zvec_group_by_invalid"), 9);
+
+    let zero_groups = new_group_by_query(0, 1);
+    let err = collection
+        .group_by_query(&zero_groups)
+        .expect_err("group_count must be positive");
+    assert_eq!(err.code, ErrorCode::InvalidArgument);
+
+    let mut missing_field =
+        GroupBySearchQuery::new("embedding", "no_such_field", &[0.0, 0.0, 0.0, 0.0], 2, 1)
+            .expect("failed to create group-by query");
+    missing_field
+        .set_flat_params(FlatQueryParams::new(false, 10.0))
+        .expect("set flat params failed");
+    let err = collection
+        .group_by_query(&missing_field)
+        .expect_err("the group-by field must exist in the schema");
+    assert_eq!(err.code, ErrorCode::InvalidArgument);
+}
+
+#[test]
+fn test_group_by_query_results_outlive_the_collection() {
+    ensure_initialized();
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let collection = create_group_by_collection(&tmp_dir.path().join("zvec_group_by_owned"), 9);
+
+    let query = new_group_by_query(2, 1);
+    let groups = collection.group_by_query(&query).unwrap();
+    assert_eq!(groups.len(), 2);
+
+    // The groups own their documents, so closing the collection is safe.
+    drop(collection);
+
+    assert_eq!(groups[0].group_by_value, "0");
+    assert_eq!(groups[0].docs[0].get_pk(), Some("doc_0"));
+    assert_eq!(groups[0].docs[0].get_i64("id").unwrap(), Some(0));
+    assert_eq!(groups[1].group_by_value, "1");
+    assert_eq!(groups[1].docs[0].get_pk(), Some("doc_3"));
+    assert!((groups[1].docs[0].get_score() - 9.0).abs() < 1e-3);
 }

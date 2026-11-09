@@ -349,6 +349,8 @@ pub const ZVEC_QUANTIZE_TYPE_INT8: zvec_quantize_type_t = 2;
 pub const ZVEC_QUANTIZE_TYPE_INT4: zvec_quantize_type_t = 3;
 /// RaBitQ quantization.
 pub const ZVEC_QUANTIZE_TYPE_RABITQ: zvec_quantize_type_t = 4;
+/// Product quantization (PQ, optionally rotated as OPQ).
+pub const ZVEC_QUANTIZE_TYPE_PQ: zvec_quantize_type_t = 8;
 
 // =============================================================================
 // Log Level Constants
@@ -470,6 +472,56 @@ pub struct zvec_error_details_t {
     pub file: *const c_char,
     pub line: c_int,
     pub function: *const c_char,
+}
+
+/// IVF product-quantization configuration.
+///
+/// Mirrors `zvec_pq_quantizer_params_t`. Passed by pointer to
+/// [`zvec_index_params_set_quantizer_pq`] and
+/// [`zvec_index_params_get_quantizer_pq`]; both copy the values, so the struct
+/// never outlives the call.
+#[repr(C)]
+pub struct zvec_pq_quantizer_params_t {
+    /// Number of PQ sub-vector chunks; must be positive and at most the
+    /// vector dimension.
+    pub num_chunk: c_int,
+    /// Bits per chunk code word; `4` or `8`.
+    pub num_bits: c_int,
+    /// Learn a rotation (OPQ) instead of quantizing the raw vectors.
+    pub enable_rotate: bool,
+    /// Pack chunk codes for SIMD scanning; requires `num_bits == 4`.
+    pub fast_scan: bool,
+    /// Outer OPQ training iterations; must be non-zero when rotating.
+    pub opq_iter: u32,
+    /// Inner PQ training iterations per OPQ pass; must be non-zero when
+    /// rotating.
+    pub opq_pq_iter: u32,
+}
+
+/// Default PQ configuration, mirroring `ZVEC_PQ_QUANTIZER_PARAMS_DEFAULT`.
+pub const ZVEC_PQ_QUANTIZER_PARAMS_DEFAULT: zvec_pq_quantizer_params_t =
+    zvec_pq_quantizer_params_t {
+        num_chunk: 8,
+        num_bits: 8,
+        enable_rotate: false,
+        fast_scan: false,
+        opq_iter: 5,
+        opq_pq_iter: 4,
+    };
+
+/// One group of grouped vector search results.
+///
+/// Mirrors `zvec_group_result_t`. Every member is owned by the array returned
+/// through [`zvec_collection_group_by_query`]; release the whole array with
+/// [`zvec_group_results_free`] instead of freeing members individually.
+#[repr(C)]
+pub struct zvec_group_result_t {
+    /// String representation of the grouping value.
+    pub group_by_value: *mut c_char,
+    /// Documents ordered by vector similarity; may be null for an empty group.
+    pub docs: *mut *mut zvec_doc_t,
+    /// Number of documents in `docs`.
+    pub doc_count: usize,
 }
 
 // =============================================================================
@@ -664,6 +716,14 @@ extern "C" {
     pub fn zvec_index_params_get_quantizer_enable_rotate(
         params: *const zvec_index_params_t,
     ) -> bool;
+    pub fn zvec_index_params_set_quantizer_pq(
+        params: *mut zvec_index_params_t,
+        pq: *const zvec_pq_quantizer_params_t,
+    ) -> zvec_error_code_t;
+    pub fn zvec_index_params_get_quantizer_pq(
+        params: *const zvec_index_params_t,
+        pq: *mut zvec_pq_quantizer_params_t,
+    ) -> zvec_error_code_t;
     pub fn zvec_index_params_set_hnsw_params(
         params: *mut zvec_index_params_t,
         m: c_int,
@@ -1087,6 +1147,13 @@ extern "C" {
         results: *mut *mut *mut zvec_doc_t,
         result_count: *mut usize,
     ) -> zvec_error_code_t;
+    pub fn zvec_collection_group_by_query(
+        collection: *const zvec_collection_t,
+        query: *const zvec_group_by_vector_query_t,
+        results: *mut *mut zvec_group_result_t,
+        result_count: *mut usize,
+    ) -> zvec_error_code_t;
+    pub fn zvec_group_results_free(results: *mut zvec_group_result_t, result_count: usize);
     pub fn zvec_collection_multi_query(
         collection: *const zvec_collection_t,
         query: *const zvec_multi_query_t,

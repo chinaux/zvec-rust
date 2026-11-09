@@ -229,6 +229,7 @@ Run any example with `cargo run --example <name>`:
 | `basic` | End-to-end workflow: schema → insert → query → fetch → delete |
 | `schema_builder` | Various schema configurations: field types, index types, quantization |
 | `vector_search` | Vector query patterns: simple, builder, filter, output fields, HNSW params |
+| `group_by_search` | Grouped vector search: bucket the nearest matches by a scalar field |
 | `crud_operations` | Full CRUD: insert, fetch, update, upsert, delete, stats, flush |
 | `config_logging` | Library configuration: memory limits, thread counts, logging |
 
@@ -385,6 +386,29 @@ vector query (adding an FTS clause makes it a hybrid search), an FTS clause
 without a vector builds a keyword-only query, and neither builds a scalar query.
 `SearchQuery::fts(field, fts, topk)` is the direct keyword-only constructor.
 
+### Grouped Search
+
+`GroupBySearchQuery` buckets the nearest matches by a scalar field instead of
+returning one flat list, so a single popular value cannot dominate the page:
+
+```rust
+// At most 3 groups, at most 2 documents per group
+let mut query = GroupBySearchQuery::new("embedding", "category", &query_vec, 3, 2)?;
+query.set_output_fields(&["id", "title"])?;
+query.set_filter("price < 100")?;
+
+let groups = collection.group_by_query(&query)?;
+for group in &groups {
+    println!("{}: {} document(s)", group.group_by_value, group.doc_count());
+    for doc in &group.docs {
+        println!("  {} score {:.4}", doc.get_pk().unwrap_or(""), doc.get_score());
+    }
+}
+```
+
+Each `GroupResult` owns its documents, so they stay readable after the query and
+the collection are dropped. An empty vector means no group matched.
+
 ### Multi-Query (Hybrid Search)
 
 `MultiQuery` combines multiple sub-queries (dense vector, sparse vector, or FTS) with RRF or weighted reranking:
@@ -435,6 +459,7 @@ Available distance metrics: `L2`, `Ip`, `Cosine`, `MipsL2`.
 | HNSW+Q | `IndexParams::hnsw_with_quantize(...)` | HNSW with quantization |
 | IVF | `IndexParams::ivf(metric, nlist, niters, soar)` | Inverted file index |
 | IVF RaBitQ | `IndexParams::ivf_rabitq(metric, nlist, total_bits, sample_count)` | IVF with RaBitQ quantization |
+| IVF PQ | `IndexParams::ivf_pq(metric, nlist, niters, soar, pq)` | IVF with product quantization (PQ4/PQ8, optional OPQ) |
 | Flat | `IndexParams::flat(metric)` | Brute-force index |
 | DiskANN | `IndexParams::diskann(metric, max_degree, list_size, pq_chunk_num)` | Disk-based graph index for large datasets (Linux x86_64/ARM64, macOS ARM64, Windows x86_64, 64-bit Android/iOS) |
 | Invert | `IndexParams::invert(range, wildcard)` | Scalar field index |
@@ -443,6 +468,27 @@ Available distance metrics: `L2`, `Ip`, `Cosine`, `MipsL2`.
 With `Int8` / `Int4` quantization, `params.set_quantizer_enable_rotate(true)` randomly rotates
 vectors before quantization to reduce the quantization error. The rotation matrix is stored with
 the index and applied to query vectors at search time.
+
+Product quantization compresses each vector into `num_chunk` code words and needs an FP32 field
+with an `L2`, `Ip` or `Cosine` metric:
+
+```rust
+// PQ4: 4 bits per chunk; the dimension must be divisible by num_chunk
+let params = IndexParams::ivf_pq(MetricType::L2, 100, 10, false, PqQuantizerParams::pq4(8))?;
+
+// PQ8 with a learned rotation (OPQ); FastScan is PQ4-only, so it stays off
+let params = IndexParams::ivf_pq(
+    MetricType::Cosine,
+    100,
+    10,
+    false,
+    PqQuantizerParams::pq8(16).with_rotation(5, 4),
+)?;
+```
+
+`params.set_quantizer_pq(pq)` applies the same configuration to existing IVF params and selects
+`QuantizeType::Pq`; `params.quantizer_pq()` reads it back. HNSW can quantize with PQ as well, but
+only with the engine defaults: `IndexParams::hnsw_with_quantize(metric, m, ef, QuantizeType::Pq)`.
 
 ## Testing
 

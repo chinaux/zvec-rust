@@ -223,6 +223,12 @@ pub enum QuantizeType {
     Int4 = 3,
     /// RaBitQ quantization.
     Rabitq = 4,
+    /// Product quantization (PQ), optionally learned as OPQ.
+    ///
+    /// Configure it through [`PqQuantizerParams`](crate::schema::PqQuantizerParams)
+    /// on IVF index params; schema validation additionally requires an FP32
+    /// vector field with an L2, IP or Cosine metric.
+    Pq = 8,
 }
 
 impl From<u32> for QuantizeType {
@@ -232,6 +238,7 @@ impl From<u32> for QuantizeType {
             2 => QuantizeType::Int8,
             3 => QuantizeType::Int4,
             4 => QuantizeType::Rabitq,
+            8 => QuantizeType::Pq,
             _ => QuantizeType::Undefined,
         }
     }
@@ -540,6 +547,7 @@ mod tests {
         assert_eq!(QuantizeType::from(2), QuantizeType::Int8);
         assert_eq!(QuantizeType::from(3), QuantizeType::Int4);
         assert_eq!(QuantizeType::from(4), QuantizeType::Rabitq);
+        assert_eq!(QuantizeType::from(8), QuantizeType::Pq);
     }
 
     #[test]
@@ -556,6 +564,7 @@ mod tests {
             QuantizeType::Int8,
             QuantizeType::Int4,
             QuantizeType::Rabitq,
+            QuantizeType::Pq,
         ];
         for qt in all {
             let numeric: u32 = qt.into();

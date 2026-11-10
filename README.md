@@ -41,10 +41,11 @@ Safe, idiomatic Rust bindings for the [zvec](https://github.com/alibaba/zvec) ve
 
 > The dynamic library name varies by platform: `libzvec_c_api.dylib` (macOS), `libzvec_c_api.so` (Linux), `zvec_c_api.dll` (Windows).
 
-> The Windows ARM64 prebuilt ships without RaBitQ and DiskANN: upstream zvec
-> gates RaBitQ on x86_64 (its kernels are AVX2/AVX-512) and its Windows
-> DiskANN backend on x86_64 too, so those index types are unavailable on that
-> target.
+> The Windows ARM64 prebuilt ships without RaBitQ: since zvec v0.8.1 its arm64
+> kernels cover Linux, macOS, Android and iOS, but Windows arm64 is left out, so
+> IVF-RaBitQ reports `NotSupported` on that target. DiskANN is no longer
+> restricted — v0.8.1 added Intel macOS and Windows ARM64, so every prebuilt
+> target has it.
 
 ## Architecture
 
@@ -461,7 +462,7 @@ Available distance metrics: `L2`, `Ip`, `Cosine`, `MipsL2`.
 | IVF RaBitQ | `IndexParams::ivf_rabitq(metric, nlist, total_bits, sample_count)` | IVF with RaBitQ quantization |
 | IVF PQ | `IndexParams::ivf_pq(metric, nlist, niters, soar, pq)` | IVF with product quantization (PQ4/PQ8, optional OPQ) |
 | Flat | `IndexParams::flat(metric)` | Brute-force index |
-| DiskANN | `IndexParams::diskann(metric, max_degree, list_size, pq_chunk_num)` | Disk-based graph index for large datasets (Linux x86_64/ARM64, macOS ARM64, Windows x86_64, 64-bit Android/iOS) |
+| DiskANN | `IndexParams::diskann(metric, max_degree, list_size, pq_chunk_num)` | Disk-based graph index for large datasets (since zvec v0.8.1: Linux x86_64/ARM64, macOS x86_64/ARM64, Windows x86_64/ARM64, 64-bit Android/iOS) |
 | Invert | `IndexParams::invert(range, wildcard)` | Scalar field index |
 | FTS | `IndexParams::fts(tokenizer, filters, extra)` | Full-text search index |
 

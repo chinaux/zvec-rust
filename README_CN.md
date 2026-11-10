@@ -40,9 +40,10 @@
 
 > 动态库文件名因平台而异：`libzvec_c_api.dylib`（macOS）、`libzvec_c_api.so`（Linux）、`zvec_c_api.dll`（Windows）。
 
-> Windows ARM64 预编译产物不含 RaBitQ 与 DiskANN：上游 zvec 将 RaBitQ 限定在
-> x86_64（其内核为 AVX2/AVX-512），Windows 的 DiskANN 后端同样只支持 x86_64，
-> 因此该目标上这两类索引不可用。
+> Windows ARM64 预编译产物不含 RaBitQ：自 zvec v0.8.1 起，其 arm64 内核覆盖 Linux、
+> macOS、Android 与 iOS，但未包含 Windows arm64，因此该目标上 IVF-RaBitQ 返回
+> `NotSupported`。DiskANN 已不再受限——v0.8.1 新增了 Intel macOS 与 Windows ARM64，
+> 所有预编译目标均可使用。
 
 ## 架构
 
@@ -449,7 +450,7 @@ mq.set_rerank_weighted(&[0.7, 0.3])?;  // 每个子查询的权重
 | IVF RaBitQ | `IndexParams::ivf_rabitq(metric, nlist, total_bits, sample_count)` | 带 RaBitQ 量化的 IVF 索引 |
 | IVF PQ | `IndexParams::ivf_pq(metric, nlist, niters, soar, pq)` | 带乘积量化的 IVF 索引（PQ4/PQ8，可选 OPQ） |
 | Flat | `IndexParams::flat(metric)` | 暴力搜索索引 |
-| DiskANN | `IndexParams::diskann(metric, max_degree, list_size, pq_chunk_num)` | 基于磁盘的图索引，适合大规模数据集（Linux x86_64/ARM64、macOS ARM64、Windows x86_64、64 位 Android/iOS） |
+| DiskANN | `IndexParams::diskann(metric, max_degree, list_size, pq_chunk_num)` | 基于磁盘的图索引，适合大规模数据集（自 zvec v0.8.1 起：Linux x86_64/ARM64、macOS x86_64/ARM64、Windows x86_64/ARM64、64 位 Android/iOS） |
 | Invert | `IndexParams::invert(range, wildcard)` | 标量字段索引 |
 | FTS | `IndexParams::fts(tokenizer, filters, extra)` | 全文检索索引 |
 
